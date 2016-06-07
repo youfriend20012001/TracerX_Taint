@@ -317,12 +317,6 @@ void SpecialFunctionHandler::handleAssertFail(ExecutionState &state,
                                               KInstruction *target,
                                               std::vector<ref<Expr> > &arguments) {
   assert(arguments.size()==4 && "invalid number of arguments to __assert_fail");
-  llvm::errs() << "assert fail 2 \n";
-  llvm::errs() << "arguments : \n";
-  for (std::vector<ref<Expr> >::iterator it = arguments.begin();
-       it != arguments.end(); ++it) {
-    it->get()->dump();
-  }
   executor.terminateStateOnError(state,
 				 "ASSERTION FAIL: " + readStringAtAddress(state, arguments[0]),
 				 "assert.err");
