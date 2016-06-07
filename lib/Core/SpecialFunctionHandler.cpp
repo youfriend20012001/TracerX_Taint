@@ -77,12 +77,12 @@ static SpecialFunctionHandler::HandlerInfo handlerInfo[] = {
   addDNR("_exit", handleExit),
   { "exit", &SpecialFunctionHandler::handleExit, true, false, true },
   addDNR("klee_abort", handleAbort),
-  addDNR("klee_silent_exit", handleSilentExit),  
+  addDNR("klee_silent_exit", handleSilentExit),
   addDNR("klee_report_error", handleReportError),
-
   add("calloc", handleCalloc, true),
   add("free", handleFree, false),
   add("klee_assume", handleAssume, false),
+  add("klee_abstract", handleAbstract, false),
   add("klee_check_memory_access", handleCheckMemoryAccess, false),
   add("klee_get_valuef", handleGetValue, true),
   add("klee_get_valued", handleGetValue, true),
@@ -133,7 +133,7 @@ static SpecialFunctionHandler::HandlerInfo handlerInfo[] = {
   add("__ubsan_handle_divrem_overflow", handleDivRemOverflow, false),
 
 #undef addDNR
-#undef add  
+#undef add
 };
 
 SpecialFunctionHandler::const_iterator SpecialFunctionHandler::begin() {
@@ -317,6 +317,12 @@ void SpecialFunctionHandler::handleAssertFail(ExecutionState &state,
                                               KInstruction *target,
                                               std::vector<ref<Expr> > &arguments) {
   assert(arguments.size()==4 && "invalid number of arguments to __assert_fail");
+  llvm::errs() << "assert fail 2 \n";
+  llvm::errs() << "arguments : \n";
+  for (std::vector<ref<Expr> >::iterator it = arguments.begin();
+       it != arguments.end(); ++it) {
+    it->get()->dump();
+  }
   executor.terminateStateOnError(state,
 				 "ASSERTION FAIL: " + readStringAtAddress(state, arguments[0]),
 				 "assert.err");
@@ -405,6 +411,24 @@ void SpecialFunctionHandler::handleAssume(ExecutionState &state,
     }
   } else {
     executor.addConstraint(state, e);
+  }
+}
+
+void
+SpecialFunctionHandler::handleAbstract(ExecutionState &state,
+                                       KInstruction *target,
+                                       std::vector<ref<Expr> > &arguments) {
+  assert(arguments.size() == 1 &&
+         "invalid number of arguments to klee_abstract");
+  ref<Expr> e = arguments[0];
+
+  if (e->getWidth() != Expr::Bool)
+    e = NeExpr::create(e, ConstantExpr::create(0, e->getWidth()));
+
+  if (executor.checkImplication(state, e)) {
+    executor.replaceConstraint(state, e);
+  } else {
+    executor.terminateStateOnError(state, "abstraction error", "user.err");
   }
 }
 

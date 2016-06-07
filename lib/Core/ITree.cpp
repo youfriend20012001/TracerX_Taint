@@ -704,6 +704,26 @@ void SearchTree::addPathCondition(ITreeNode *iTreeNode,
   instance->pathConditionMap[pathCondition] = node;
 }
 
+void SearchTree::replacePathCondition(ITreeNode *iTreeNode,
+                                      PathCondition *pathCondition,
+                                      ref<Expr> condition) {
+
+  if (!OUTPUT_INTERPOLATION_TREE)
+    return;
+
+  assert(SearchTree::instance && "Search tree graph not initialized");
+
+  SearchTree::Node *node = instance->itreeNodeMap[iTreeNode];
+
+  std::string s = PrettyExpressionBuilder::construct(condition);
+
+  std::pair<std::string, bool> p(s, false);
+
+  node->pathConditionTable.clear();
+  node->pathConditionTable[pathCondition] = p;
+  instance->pathConditionMap[pathCondition] = node;
+}
+
 void SearchTree::addTableEntryMapping(ITreeNode *iTreeNode,
                                       SubsumptionTableEntry *entry) {
   if (!OUTPUT_INTERPOLATION_TREE)
@@ -2102,6 +2122,13 @@ void ITreeNode::addConstraint(ref<Expr> &constraint, llvm::Value *condition) {
       new PathCondition(constraint, dependency, condition, pathCondition);
   graph->addPathCondition(this, pathCondition, constraint);
   ITreeNode::addConstraintTimer.stop();
+}
+
+void ITreeNode::replaceConstraint(ref<Expr> &constraint,
+                                  llvm::Value *condition) {
+  pathCondition =
+      new PathCondition(constraint, dependency, condition, pathCondition);
+  graph->replacePathCondition(this, pathCondition, constraint);
 }
 
 void ITreeNode::split(ExecutionState *leftData, ExecutionState *rightData) {

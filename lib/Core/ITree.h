@@ -277,6 +277,10 @@ public:
                                PathCondition *pathCondition,
                                ref<Expr> condition);
 
+  static void replacePathCondition(ITreeNode *iTreeNode,
+                                   PathCondition *pathCondition,
+                                   ref<Expr> condition);
+
   static void addTableEntryMapping(ITreeNode *iTreeNode,
                                    SubsumptionTableEntry *entry);
 
@@ -508,6 +512,8 @@ public:
   ref<Expr> getInterpolant(std::set<const Array *> &replacements) const;
 
   void addConstraint(ref<Expr> &constraint, llvm::Value *value);
+
+  void replaceConstraint(ref<Expr> &constraint, llvm::Value *value);
 
   void split(ExecutionState *leftData, ExecutionState *rightData);
 
