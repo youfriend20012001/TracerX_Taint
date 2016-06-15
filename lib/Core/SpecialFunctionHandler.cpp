@@ -423,10 +423,12 @@ SpecialFunctionHandler::handleAbstract(ExecutionState &state,
   bool success = executor.checkImplication(state, e, result);
   assert(success && "FIXME: Unhandled solver failure");
 
-  if (result == Solver::False) {
-    executor.terminateStateOnError(state, "abstraction error", "user.err");
-  } else {
+  if (result == Solver::True) {
     executor.replaceConstraint(state, e);
+  } else if (result == Solver::Unknown) {
+    executor.addConstraint(state, e);
+  } else {
+    executor.terminateStateOnError(state, "abstraction error", "user.err");
   }
 }
 
