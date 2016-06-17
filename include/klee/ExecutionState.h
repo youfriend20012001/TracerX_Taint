@@ -186,7 +186,8 @@ public:
     constraints.addConstraint(e);
   }
 
-  void replaceConstraint(ref<Expr> e, std::vector<ref<Expr> > keptConstraints) {
+  void replaceConstraint(ref<Expr> e,
+                         std::vector<ref<Expr> > &keptConstraints) {
     constraints.replaceConstraint(e, keptConstraints);
   }
 

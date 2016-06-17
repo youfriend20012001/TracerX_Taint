@@ -558,7 +558,6 @@ std::string SearchTree::recurseRender(const SearchTree::Node *node) {
 
   stream << "Node" << node->nodeId;
   std::string sourceNodeName = stream.str();
-
   stream << " [shape=record,label=\"{" << node->nodeId << ": " << node->name
          << "\\l";
   for (std::map<PathCondition *, std::pair<std::string, bool> >::const_iterator
@@ -602,6 +601,7 @@ std::string SearchTree::render() {
     return res;
 
   std::ostringstream stream;
+
   for (std::vector<SearchTree::NumberedEdge *>::iterator
            it = subsumptionEdges.begin(),
            itEnd = subsumptionEdges.end();
@@ -741,6 +741,8 @@ void SearchTree::setAsCore(PathCondition *pathCondition) {
 
   assert(SearchTree::instance && "Search tree graph not initialized");
 
+  assert(instance->pathConditionMap[pathCondition] &&
+         "pathCondition is not found");
   instance->pathConditionMap[pathCondition]->pathConditionTable[pathCondition].second = true;
 }
 
@@ -2125,7 +2127,7 @@ void ITreeNode::addConstraint(ref<Expr> &constraint, llvm::Value *condition) {
 }
 
 void ITreeNode::replaceConstraint(ref<Expr> &constraint, llvm::Value *condition,
-                                  std::vector<ref<Expr> > keptConstraints) {
+                                  std::vector<ref<Expr> > &keptConstraints) {
   PathCondition *prev = NULL;
   PathCondition *current = NULL;
   for (std::vector<ref<Expr> >::iterator it = keptConstraints.begin();
@@ -2133,7 +2135,6 @@ void ITreeNode::replaceConstraint(ref<Expr> &constraint, llvm::Value *condition,
     current = new PathCondition(*it, dependency, condition, prev);
     prev = current;
   }
-
   pathCondition = new PathCondition(constraint, dependency, condition, prev);
   graph->replacePathCondition(this, pathCondition, constraint);
 }
@@ -2217,7 +2218,6 @@ void ITreeNode::unsatCoreMarking(std::vector<ref<Expr> > unsatCore,
     }
     markerMap[it->car().get()] = it;
   }
-
   AllocationGraph *g = new AllocationGraph();
   for (std::vector<ref<Expr> >::iterator it1 = unsatCore.begin();
        it1 != unsatCore.end(); it1++) {

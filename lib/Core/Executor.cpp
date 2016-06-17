@@ -1041,8 +1041,10 @@ bool Executor::checkImplication(ExecutionState &state, ref<Expr> condition,
   solver->setTimeout(coreSolverTimeout);
   bool success = solver->evaluate(state, condition, result);
   solver->setTimeout(0);
-  std::vector<ref<Expr> > unsatCore = solver->getUnsatCore();
-  state.itreeNode->unsatCoreMarking(unsatCore, state);
+  if (success && result == Solver::True) {
+    std::vector<ref<Expr> > unsatCore = solver->getUnsatCore();
+    state.itreeNode->unsatCoreMarking(unsatCore, state);
+  }
   return success;
 }
 
@@ -1537,7 +1539,6 @@ static inline const llvm::fltSemantics * fpWidthToSemantics(unsigned width) {
 
 void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
   Instruction *i = ki->inst;
-
   switch (i->getOpcode()) {
     // Control flow
   case Instruction::Ret: {
@@ -2911,7 +2912,6 @@ void Executor::run(ExecutionState &initialState) {
       {
 	KInstruction *ki = state.pc;
 	stepInstruction(state);
-
 	executeInstruction(state, ki);
 	processTimers(&state, MaxInstructionTime);
 
@@ -3829,7 +3829,6 @@ void Executor::runFunctionAsMain(Function *f,
   run(*state);
   delete processTree;
   processTree = 0;
-
   if (INTERPOLATION_ENABLED) {
     SearchTree::save(interpreterHandler->getOutputFilename("tree.dot"));
     SearchTree::deallocate();
