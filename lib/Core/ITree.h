@@ -513,8 +513,8 @@ public:
 
   void addConstraint(ref<Expr> &constraint, llvm::Value *value);
 
-  void replaceConstraint(ref<Expr> &constraint, llvm::Value *value,
-                         std::vector<ref<Expr> > &keptConstraints);
+  void abstractConstraints(ref<Expr> &constraint, llvm::Value *value,
+                           std::vector<ref<Expr> > &keptConstraints);
 
   void split(ExecutionState *leftData, ExecutionState *rightData);
 
