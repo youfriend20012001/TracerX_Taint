@@ -1051,7 +1051,6 @@ bool Executor::checkImplication(ExecutionState &state, ref<Expr> condition,
 void Executor::abstractConstraints(ExecutionState &state, ref<Expr> condition) {
   std::vector<ref<Expr> > keptConstraints;
   state.abstractConstraints(condition, keptConstraints);
-#ifdef SUPPORT_Z3
   if (!INTERPOLATION_ENABLED)
     return;
 
@@ -1065,7 +1064,6 @@ void Executor::abstractConstraints(ExecutionState &state, ref<Expr> condition) {
     state.itreeNode->abstractConstraints(
         condition, state.prevPC->inst->getOperand(0), keptConstraints);
   }
-#endif
   keptConstraints.clear();
 }
 
