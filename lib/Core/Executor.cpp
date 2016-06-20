@@ -1036,18 +1036,6 @@ void Executor::addConstraint(ExecutionState &state, ref<Expr> condition) {
                                  ConstantExpr::alloc(1, Expr::Bool));
 }
 
-bool Executor::checkImplication(ExecutionState &state, ref<Expr> condition,
-                                Solver::Validity &result) {
-  solver->setTimeout(coreSolverTimeout);
-  bool success = solver->evaluate(state, condition, result);
-  solver->setTimeout(0);
-  if (success && result == Solver::True) {
-    std::vector<ref<Expr> > unsatCore = solver->getUnsatCore();
-    state.itreeNode->unsatCoreMarking(unsatCore, state);
-  }
-  return success;
-}
-
 void Executor::abstractConstraints(ExecutionState &state, ref<Expr> condition) {
   std::vector<ref<Expr> > keptConstraints;
   state.abstractConstraints(condition, keptConstraints);
