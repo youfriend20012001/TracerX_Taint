@@ -2128,7 +2128,7 @@ void ITreeNode::addConstraint(ref<Expr> &constraint, llvm::Value *condition) {
 
 void ITreeNode::abstractConstraints(ref<Expr> &constraint,
                                     llvm::Value *condition,
-                                    std::vector<ref<Expr> > &keptConstraints) {
+                                    std::vector<ref<Expr> > keptConstraints) {
   PathCondition *prev = NULL;
   PathCondition *current = NULL;
   for (std::vector<ref<Expr> >::iterator it = keptConstraints.begin();
