@@ -743,6 +743,7 @@ void SearchTree::setAsCore(PathCondition *pathCondition) {
 
   assert(instance->pathConditionMap[pathCondition] &&
          "pathCondition has no corresponding tree node");
+
   instance->pathConditionMap[pathCondition]->pathConditionTable[pathCondition].second = true;
 }
 
@@ -2134,6 +2135,7 @@ void ITreeNode::abstractConstraints(ref<Expr> &constraint,
   for (std::vector<ref<Expr> >::iterator it = keptConstraints.begin();
        it != keptConstraints.end(); ++it) {
     current = new PathCondition(*it, dependency, condition, prev);
+    graph->replacePathCondition(this, current, constraint);
     prev = current;
   }
   pathCondition = new PathCondition(constraint, dependency, condition, prev);
