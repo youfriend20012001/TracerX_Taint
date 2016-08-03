@@ -426,7 +426,7 @@ SpecialFunctionHandler::handleAbstract(ExecutionState &state,
   executor.solver->setTimeout(0);
   if (success && result == Solver::True) {
     std::vector<ref<Expr> > unsatCore = executor.solver->getUnsatCore();
-    state.itreeNode->unsatCoreMarking(unsatCore, state);
+    state.itreeNode->unsatCoreMarking(unsatCore);
   }
   assert(success && "FIXME: Unhandled solver failure");
 

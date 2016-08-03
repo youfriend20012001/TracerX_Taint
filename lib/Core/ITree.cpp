@@ -199,34 +199,34 @@ SearchTree::PrettyExpressionBuilder::constructMulByConstant(std::string expr,
   return stream.str();
 }
 std::string
-SearchTree::PrettyExpressionBuilder::constructUDivByConstant(std::string expr_n,
+SearchTree::PrettyExpressionBuilder::constructUDivByConstant(std::string expr,
                                                              uint64_t d) {
   std::ostringstream stream;
-  stream << "(" << expr_n << " / " << d << ")";
+  stream << "(" << expr << " / " << d << ")";
   return stream.str();
 }
 std::string
-SearchTree::PrettyExpressionBuilder::constructSDivByConstant(std::string expr_n,
+SearchTree::PrettyExpressionBuilder::constructSDivByConstant(std::string expr,
                                                              uint64_t d) {
   std::ostringstream stream;
-  stream << "(" << expr_n << " / " << d << ")";
+  stream << "(" << expr << " / " << d << ")";
   return stream.str();
 }
 
 std::string
 SearchTree::PrettyExpressionBuilder::getInitialArray(const Array *root) {
-  std::string array_expr =
+  std::string arrayExpr =
       buildArray(root->name.c_str(), root->getDomain(), root->getRange());
 
   if (root->isConstantArray()) {
     for (unsigned i = 0, e = root->size; i != e; ++i) {
-      std::string prev = array_expr;
-      array_expr = writeExpr(
+      std::string prev = arrayExpr;
+      arrayExpr = writeExpr(
           prev, constructActual(ConstantExpr::alloc(i, root->getDomain())),
           constructActual(root->constantValues[i]));
     }
   }
-  return array_expr;
+  return arrayExpr;
 }
 std::string
 SearchTree::PrettyExpressionBuilder::getArrayForUpdate(const Array *root,
@@ -744,10 +744,11 @@ void SearchTree::setAsCore(PathCondition *pathCondition) {
   assert(instance->pathConditionMap[pathCondition] &&
          "pathCondition has no corresponding tree node");
 
-  instance->pathConditionMap[pathCondition]->pathConditionTable[pathCondition].second = true;
+  instance->pathConditionMap[pathCondition]
+      ->pathConditionTable[pathCondition]
+      .second = true;
 }
 
-/// @brief Save the graph
 void SearchTree::save(std::string dotFileName) {
   if (!OUTPUT_INTERPOLATION_TREE)
     return;
@@ -764,13 +765,15 @@ void SearchTree::save(std::string dotFileName) {
 
 /**/
 
-PathCondition::PathCondition(ref<Expr> &constraint, Dependency *dependency,
-                             llvm::Value *condition, PathCondition *prev)
-    : constraint(constraint), shadowConstraint(constraint), shadowed(false),
-      dependency(dependency),
-      condition(dependency ? dependency->getLatestValue(condition, constraint)
-                           : 0),
-      core(false), tail(prev) {}
+PathCondition::PathCondition(ref<Expr> &_constraint, Dependency *_dependency,
+                             llvm::Value *_condition, PathCondition *prev)
+    : constraint(_constraint), shadowConstraint(_constraint), shadowed(false),
+      dependency(_dependency), core(false), tail(prev) {
+  condition = 0;
+  if (_condition && _dependency) {
+    condition = _dependency->getLatestValue(_condition, constraint);
+  }
+}
 
 PathCondition::~PathCondition() {}
 
@@ -797,10 +800,14 @@ PathCondition::packInterpolant(std::set<const Array *> &replacements) {
   for (PathCondition *it = this; it != 0; it = it->tail) {
     if (it->core) {
       if (!it->shadowed) {
+#ifdef SUPPORT_Z3
         it->shadowConstraint =
             (NoExistential ? it->constraint
                            : ShadowArray::getShadowExpression(it->constraint,
                                                               replacements));
+#else
+        it->shadowConstraint = it->constraint;
+#endif
         it->shadowed = true;
         it->boundVariables.insert(replacements.begin(), replacements.end());
       } else {
@@ -818,14 +825,14 @@ PathCondition::packInterpolant(std::set<const Array *> &replacements) {
   return res;
 }
 
-void PathCondition::dump() {
+void PathCondition::dump() const {
   this->print(llvm::errs());
   llvm::errs() << "\n";
 }
 
-void PathCondition::print(llvm::raw_ostream &stream) {
+void PathCondition::print(llvm::raw_ostream &stream) const {
   stream << "[";
-  for (PathCondition *it = this; it != 0; it = it->tail) {
+  for (const PathCondition *it = this; it != 0; it = it->tail) {
     it->constraint->print(stream);
     stream << ": " << (it->core ? "core" : "non-core");
     if (it->tail != 0)
@@ -871,8 +878,8 @@ SubsumptionTableEntry::SubsumptionTableEntry(ITreeNode *node)
 SubsumptionTableEntry::~SubsumptionTableEntry() {}
 
 bool
-SubsumptionTableEntry::hasExistentials(std::set<const Array *> &existentials,
-                                       ref<Expr> expr) {
+SubsumptionTableEntry::hasVariableInSet(std::set<const Array *> &existentials,
+                                        ref<Expr> expr) {
   for (int i = 0, numKids = expr->getNumKids(); i < numKids; ++i) {
     if (llvm::isa<ReadExpr>(expr)) {
       ReadExpr *readExpr = llvm::dyn_cast<ReadExpr>(expr.get());
@@ -883,14 +890,14 @@ SubsumptionTableEntry::hasExistentials(std::set<const Array *> &existentials,
         if ((*it) == array)
           return true;
       }
-    } else if (hasExistentials(existentials, expr->getKid(i)))
+    } else if (hasVariableInSet(existentials, expr->getKid(i)))
       return true;
   }
   return false;
 }
 
-bool SubsumptionTableEntry::hasFree(std::set<const Array *> &existentials,
-                                    ref<Expr> expr) {
+bool SubsumptionTableEntry::hasVariableNotInSet(
+    std::set<const Array *> &existentials, ref<Expr> expr) {
   for (int i = 0, numKids = expr->getNumKids(); i < numKids; ++i) {
     if (llvm::isa<ReadExpr>(expr)) {
       ReadExpr *readExpr = llvm::dyn_cast<ReadExpr>(expr.get());
@@ -902,17 +909,10 @@ bool SubsumptionTableEntry::hasFree(std::set<const Array *> &existentials,
           return false;
       }
       return true;
-    } else if (hasFree(existentials, expr->getKid(i)))
+    } else if (hasVariableNotInSet(existentials, expr->getKid(i)))
       return true;
   }
   return false;
-}
-
-ref<Expr>
-SubsumptionTableEntry::simplifyWithFourierMotzkin(ref<Expr> existsExpr) {
-  // This is a template for Fourier-Motzkin elimination. For now,
-  // we simply return the input argument.
-  return existsExpr;
 }
 
 ref<Expr>
@@ -979,7 +979,8 @@ SubsumptionTableEntry::simplifyArithmeticBody(ref<Expr> existsExpr,
   if (fullEqualityConstraint->isTrue()) {
     // This is the case when the result is still an existentially-quantified
     // formula, but one that does not contain free variables.
-    hasExistentialsOnly = !hasFree(expr->variables, simplifiedInterpolant);
+    hasExistentialsOnly =
+        !hasVariableNotInSet(expr->variables, simplifiedInterpolant);
     if (hasExistentialsOnly) {
       return existsExpr->rebuild(&simplifiedInterpolant);
     }
@@ -994,7 +995,7 @@ SubsumptionTableEntry::simplifyArithmeticBody(ref<Expr> existsExpr,
     ref<Expr> interpolantAtom = (*it); // For example C cmp D
 
     // only process the interpolant that still has existential variables in it.
-    if (hasExistentials(boundVariables, interpolantAtom)) {
+    if (hasVariableInSet(boundVariables, interpolantAtom)) {
       for (std::vector<ref<Expr> >::iterator itEq = equalityPack.begin(),
                                              itEqEnd = equalityPack.end();
            itEq != itEqEnd; ++itEq) {
@@ -1020,8 +1021,8 @@ SubsumptionTableEntry::simplifyArithmeticBody(ref<Expr> existsExpr,
         ref<Expr> newIntpRight;
 
         // When the if condition holds, we perform substitution
-        if (containShadowExpr(equalityConstraintLeft,
-                              interpolantAtom->getKid(0))) {
+        if (hasSubExpression(equalityConstraintLeft,
+                             interpolantAtom->getKid(0))) {
           // Here we perform substitution, where given
           // an interpolant atom and an equality constraint,
           // we try to find a subexpression in the equality constraint
@@ -1064,7 +1065,7 @@ SubsumptionTableEntry::simplifyArithmeticBody(ref<Expr> existsExpr,
   ref<Expr> newBody;
 
   if (newInterpolant.get()) {
-    if (!hasExistentials(expr->variables, newInterpolant))
+    if (!hasVariableInSet(expr->variables, newInterpolant))
       return newInterpolant;
 
     newBody = AndExpr::alloc(newInterpolant, fullEqualityConstraint);
@@ -1072,40 +1073,40 @@ SubsumptionTableEntry::simplifyArithmeticBody(ref<Expr> existsExpr,
     newBody = AndExpr::alloc(simplifiedInterpolant, fullEqualityConstraint);
   }
 
-  return simplifyWithFourierMotzkin(existsExpr->rebuild(&newBody));
+  return existsExpr->rebuild(&newBody);
 }
 
 ref<Expr> SubsumptionTableEntry::replaceExpr(ref<Expr> originalExpr,
                                              ref<Expr> replacedExpr,
-                                             ref<Expr> substituteExpr) {
+                                             ref<Expr> replacementExpr) {
   // We only handle binary expressions
   if (!llvm::isa<BinaryExpr>(originalExpr) ||
       llvm::isa<ConcatExpr>(originalExpr))
     return originalExpr;
 
   if (originalExpr->getKid(0) == replacedExpr)
-    return ShadowArray::createBinaryOfSameKind(originalExpr, substituteExpr,
+    return ShadowArray::createBinaryOfSameKind(originalExpr, replacementExpr,
                                                originalExpr->getKid(1));
 
   if (originalExpr->getKid(1) == replacedExpr)
     return ShadowArray::createBinaryOfSameKind(
-        originalExpr, originalExpr->getKid(0), substituteExpr);
+        originalExpr, originalExpr->getKid(0), replacementExpr);
 
   return ShadowArray::createBinaryOfSameKind(
       originalExpr,
-      replaceExpr(originalExpr->getKid(0), replacedExpr, substituteExpr),
-      replaceExpr(originalExpr->getKid(1), replacedExpr, substituteExpr));
+      replaceExpr(originalExpr->getKid(0), replacedExpr, replacementExpr),
+      replaceExpr(originalExpr->getKid(1), replacedExpr, replacementExpr));
 }
 
-bool SubsumptionTableEntry::containShadowExpr(ref<Expr> expr,
-                                              ref<Expr> shadowExpr) {
-  if (expr.operator==(shadowExpr))
+bool SubsumptionTableEntry::hasSubExpression(ref<Expr> expr,
+                                             ref<Expr> subExpr) {
+  if (expr == subExpr)
     return true;
-  if (expr->getNumKids() < 2 && expr.operator!=(shadowExpr))
+  if (expr->getNumKids() < 2 && expr != subExpr)
     return false;
 
-  return containShadowExpr(expr->getKid(0), shadowExpr) ||
-         containShadowExpr(expr->getKid(1), shadowExpr);
+  return hasSubExpression(expr->getKid(0), subExpr) ||
+         hasSubExpression(expr->getKid(1), subExpr);
 }
 
 ref<Expr> SubsumptionTableEntry::simplifyInterpolantExpr(
@@ -1115,13 +1116,13 @@ ref<Expr> SubsumptionTableEntry::simplifyInterpolantExpr(
 
   if (llvm::isa<EqExpr>(expr) && llvm::isa<ConstantExpr>(expr->getKid(0)) &&
       llvm::isa<ConstantExpr>(expr->getKid(1))) {
-    return (expr->getKid(0).operator==(expr->getKid(1)))
+    return (expr->getKid(0) == expr->getKid(1))
                ? ConstantExpr::alloc(1, Expr::Bool)
                : ConstantExpr::alloc(0, Expr::Bool);
   } else if (llvm::isa<NeExpr>(expr) &&
              llvm::isa<ConstantExpr>(expr->getKid(0)) &&
              llvm::isa<ConstantExpr>(expr->getKid(1))) {
-    return (expr->getKid(0).operator!=(expr->getKid(1)))
+    return (expr->getKid(0) != expr->getKid(1))
                ? ConstantExpr::alloc(1, Expr::Bool)
                : ConstantExpr::alloc(0, Expr::Bool);
   }
@@ -1179,7 +1180,7 @@ ref<Expr> SubsumptionTableEntry::simplifyEqualityExpr(
   if (llvm::isa<EqExpr>(expr)) {
     if (llvm::isa<ConstantExpr>(expr->getKid(0)) &&
         llvm::isa<ConstantExpr>(expr->getKid(1))) {
-      return (expr->getKid(0).operator==(expr->getKid(1)))
+      return (expr->getKid(0) == expr->getKid(1))
                  ? ConstantExpr::alloc(1, Expr::Bool)
                  : ConstantExpr::alloc(0, Expr::Bool);
     }
@@ -1236,11 +1237,10 @@ ref<Expr>
 SubsumptionTableEntry::getSubstitution(ref<Expr> equalities,
                                        std::map<ref<Expr>, ref<Expr> > &map) {
   // It is assumed the lhs is an expression on the existentially-quantified
-  // variable whereas
-  // the rhs is an expression on the free variables.
+  // variable whereas the rhs is an expression on the free variables.
   if (llvm::isa<EqExpr>(equalities.get())) {
     ref<Expr> lhs = equalities->getKid(0);
-    if (llvm::isa<ReadExpr>(lhs.get()) || llvm::isa<ConcatExpr>(lhs.get())) {
+    if (isVariable(lhs)) {
       map[lhs] = equalities->getKid(1);
       return ConstantExpr::alloc(1, Expr::Bool);
     }
@@ -1343,7 +1343,7 @@ ref<Expr> SubsumptionTableEntry::simplifyExistsExpr(ref<Expr> existsExpr,
       ApplySubstitutionVisitor(substitution).visit(body->getKid(0));
 
   ExistsExpr *expr = static_cast<ExistsExpr *>(existsExpr.get());
-  if (hasExistentials(expr->variables, equalities)) {
+  if (hasVariableInSet(expr->variables, equalities)) {
     // we could also replace the occurrence of some variables with its
     // corresponding substitution mapping.
     equalities = ApplySubstitutionVisitor(substitution).visit(equalities);
@@ -1352,7 +1352,7 @@ ref<Expr> SubsumptionTableEntry::simplifyExistsExpr(ref<Expr> existsExpr,
   ref<Expr> newBody = AndExpr::alloc(interpolant, equalities);
 
   // FIXME: Need to test the performance of the following.
-  if (!hasExistentials(expr->variables, newBody))
+  if (!hasVariableInSet(expr->variables, newBody))
     return newBody;
 
   ref<Expr> ret = simplifyArithmeticBody(existsExpr->rebuild(&newBody),
@@ -1551,7 +1551,9 @@ bool SubsumptionTableEntry::subsumed(
 
   bool success = false;
 
+#ifdef SUPPORT_Z3
   Z3Solver *z3solver = 0;
+#endif /* SUPPORT_Z3 */
 
   if (!detectConflictPrimitives(state, query))
     return false;
@@ -1562,6 +1564,7 @@ bool SubsumptionTableEntry::subsumed(
   if (!llvm::isa<ConstantExpr>(query)) {
     ++checkSolverCount;
 
+#ifdef SUPPORT_Z3
     if (!existentials.empty() && llvm::isa<ExistsExpr>(query)) {
       // llvm::errs() << "Existentials not empty\n";
 
@@ -1615,7 +1618,9 @@ bool SubsumptionTableEntry::subsumed(
 
       z3solver->setCoreSolverTimeout(0);
 
-    } else {
+    } else
+#endif /* SUPPORT_Z3 */
+    {
       // llvm::errs() << "No existential\n";
 
       // llvm::errs() << "Querying for subsumption check:\n";
@@ -1647,18 +1652,19 @@ bool SubsumptionTableEntry::subsumed(
   if (success && result == Solver::True) {
     // llvm::errs() << "Solver decided validity\n";
     std::vector<ref<Expr> > unsatCore;
+#ifdef SUPPORT_Z3
     if (z3solver) {
       unsatCore = z3solver->getUnsatCore();
       delete z3solver;
-    } else {
+    } else
+#endif /* SUPPORT_Z3 */
       unsatCore = solver->getUnsatCore();
-    }
 
     // State subsumed, we mark needed constraints on the
     // path condition.
 
     // We create path condition marking structure to mark core constraints
-    state.itreeNode->unsatCoreMarking(unsatCore, state);
+    state.itreeNode->unsatCoreMarking(unsatCore);
     return true;
   }
 
@@ -1671,16 +1677,15 @@ bool SubsumptionTableEntry::subsumed(
   // llvm::errs() << "Solver did not decide validity\n";
 
   ++checkSolverFailureCount;
+#ifdef SUPPORT_Z3
   if (z3solver)
     delete z3solver;
+#endif /* SUPPORT_Z3 */
 
   return false;
 }
 
-void SubsumptionTableEntry::dump() const {
-  this->print(llvm::errs());
-  llvm::errs() << "\n";
-}
+ref<Expr> SubsumptionTableEntry::getInterpolant() const { return interpolant; }
 
 void SubsumptionTableEntry::print(llvm::raw_ostream &stream) const {
   stream << "------------ Subsumption Table Entry ------------\n";
@@ -1786,7 +1791,7 @@ void ITree::printTableStat(llvm::raw_ostream &stream) const {
                 (double)subsumptionCheckCount) << "\n";
 }
 
-void ITree::dumpInterpolationStat() {
+void ITree::dumpInterpolationStat() const {
   bool useColors = llvm::errs().is_displayed();
   if (useColors)
     llvm::errs().changeColor(llvm::raw_ostream::GREEN,
@@ -1828,7 +1833,7 @@ ITree::~ITree() {
 
 bool ITree::subsumptionCheck(TimingSolver *solver, ExecutionState &state,
                              double timeout) {
-  subsumptionCheckCount++; // For profiling
+  ++subsumptionCheckCount; // For profiling
 
   assert(state.itreeNode == currentINode);
 
@@ -1875,11 +1880,11 @@ void ITree::store(SubsumptionTableEntry *subItem) {
   subsumptionTable[subItem->nodeId].push_back(subItem);
 }
 
-void ITree::setCurrentINode(ExecutionState &state, uintptr_t programPoint) {
+void ITree::setCurrentINode(ExecutionState &state) {
   setCurrentINodeTimer.start();
   currentINode = state.itreeNode;
-  currentINode->setNodeLocation(programPoint);
-  SearchTree::setCurrentNode(state, programPoint);
+  currentINode->setNodeLocation(state.pc->inst);
+  SearchTree::setCurrentNode(state, currentINode->getNodeId());
   setCurrentINodeTimer.stop();
 }
 
@@ -1891,7 +1896,7 @@ void ITree::remove(ITreeNode *node) {
 
     // As the node is about to be deleted, it must have been completely
     // traversed, hence the correct time to table the interpolant.
-    if (!node->isSubsumed) {
+    if (!node->isSubsumed && node->storable) {
       SubsumptionTableEntry *entry = new SubsumptionTableEntry(node);
       store(entry);
       SearchTree::addTableEntryMapping(node, entry);
@@ -2026,7 +2031,7 @@ void ITree::printNode(llvm::raw_ostream &stream, ITreeNode *n,
   }
 }
 
-void ITree::print(llvm::raw_ostream &stream) {
+void ITree::print(llvm::raw_ostream &stream) const {
   stream << "------------------------- ITree Structure "
             "---------------------------\n";
   stream << this->root->nodeId;
@@ -2036,11 +2041,12 @@ void ITree::print(llvm::raw_ostream &stream) {
   this->printNode(stream, this->root, "");
   stream << "\n------------------------- Subsumption Table "
             "-------------------------\n";
-  for (std::map<uintptr_t, std::vector<SubsumptionTableEntry *> >::iterator
+  for (std::map<uintptr_t,
+                std::vector<SubsumptionTableEntry *> >::const_iterator
            it = subsumptionTable.begin(),
            itEnd = subsumptionTable.end();
        it != itEnd; ++it) {
-    for (std::vector<SubsumptionTableEntry *>::iterator
+    for (std::vector<SubsumptionTableEntry *>::const_iterator
              it1 = it->second.begin(),
              it1End = it->second.end();
          it1 != it1End; ++it1) {
@@ -2049,7 +2055,7 @@ void ITree::print(llvm::raw_ostream &stream) {
   }
 }
 
-void ITree::dump() { this->print(llvm::errs()); }
+void ITree::dump() const { this->print(llvm::errs()); }
 
 /**/
 
@@ -2059,7 +2065,7 @@ StatTimer ITreeNode::addConstraintTimer;
 StatTimer ITreeNode::splitTimer;
 StatTimer ITreeNode::executeTimer;
 StatTimer ITreeNode::bindCallArgumentsTimer;
-StatTimer ITreeNode::popAbstractDependencyFrameTimer;
+StatTimer ITreeNode::bindReturnValueTimer;
 StatTimer ITreeNode::getStoredExpressionsTimer;
 StatTimer ITreeNode::getStoredCoreExpressionsTimer;
 StatTimer ITreeNode::computeCoreAllocationsTimer;
@@ -2073,8 +2079,8 @@ void ITreeNode::printTimeStat(llvm::raw_ostream &stream) {
   stream << "KLEE: done:     execute = " << executeTimer.get() * 1000 << "\n";
   stream << "KLEE: done:     bindCallArguments = "
          << bindCallArgumentsTimer.get() * 1000 << "\n";
-  stream << "KLEE: done:     popAbstractDependencyFrame = "
-         << popAbstractDependencyFrameTimer.get() * 1000 << "\n";
+  stream << "KLEE: done:     bindReturnValue = " << bindReturnValueTimer.get() *
+                                                        1000 << "\n";
   stream << "KLEE: done:     getStoredExpressions = "
          << getStoredExpressionsTimer.get() * 1000 << "\n";
   stream << "KLEE: done:     getStoredCoreExpressions = "
@@ -2134,8 +2140,8 @@ void ITreeNode::abstractConstraints(ref<Expr> &constraint,
   PathCondition *current = NULL;
   for (std::vector<ref<Expr> >::iterator it = keptConstraints.begin();
        it != keptConstraints.end(); ++it) {
-    current = new PathCondition(*it, dependency, condition, prev);
-    graph->replacePathCondition(this, current, constraint);
+    current = new PathCondition(*it, dependency, 0, prev);
+    graph->replacePathCondition(this, current, *it);
     prev = current;
   }
   pathCondition = new PathCondition(constraint, dependency, condition, prev);
@@ -2164,14 +2170,13 @@ void ITreeNode::bindCallArguments(llvm::Instruction *site,
   ITreeNode::bindCallArgumentsTimer.stop();
 }
 
-void ITreeNode::popAbstractDependencyFrame(llvm::CallInst *site,
-                                           llvm::Instruction *inst,
-                                           ref<Expr> returnValue) {
+void ITreeNode::bindReturnValue(llvm::CallInst *site, llvm::Instruction *inst,
+                                ref<Expr> returnValue) {
   // TODO: This is probably where we should simplify
   // the dependency graph by removing callee values.
-  ITreeNode::popAbstractDependencyFrameTimer.start();
+  ITreeNode::bindReturnValueTimer.start();
   dependency->bindReturnValue(site, inst, returnValue);
-  ITreeNode::popAbstractDependencyFrameTimer.stop();
+  ITreeNode::bindReturnValueTimer.stop();
 }
 
 std::pair<Dependency::ConcreteStore, Dependency::SymbolicStore>
@@ -2204,11 +2209,9 @@ ITreeNode::getStoredCoreExpressions(std::set<const Array *> &replacements)
   return ret;
 }
 
-void ITreeNode::unsatCoreMarking(std::vector<ref<Expr> > unsatCore,
-                                 ExecutionState &state) {
-  // State subsumed, we mark needed constraints on the
-  // path condition.
-  // We create path condition marking structure to mark core constraints
+void ITreeNode::unsatCoreMarking(std::vector<ref<Expr> > unsatCore) {
+  // State subsumed, we mark needed constraints on the path condition. We create
+  // path condition marking structure to mark core constraints
   std::map<Expr *, PathCondition *> markerMap;
   for (PathCondition *it = pathCondition; it != 0; it = it->cdr()) {
     if (llvm::isa<OrExpr>(it->car().get())) {
@@ -2222,8 +2225,9 @@ void ITreeNode::unsatCoreMarking(std::vector<ref<Expr> > unsatCore,
     markerMap[it->car().get()] = it;
   }
   AllocationGraph *g = new AllocationGraph();
-  for (std::vector<ref<Expr> >::iterator it1 = unsatCore.begin();
-       it1 != unsatCore.end(); it1++) {
+  for (std::vector<ref<Expr> >::iterator it1 = unsatCore.begin(),
+                                         it1End = unsatCore.end();
+       it1 != it1End; ++it1) {
     // FIXME: Sometimes some constraints are not in the PC. This is
     // because constraints are not properly added at state merge.
     PathCondition *cond = markerMap[it1->get()];
@@ -2254,35 +2258,36 @@ void ITreeNode::print(llvm::raw_ostream &stream) const {
   this->print(stream, 0);
 }
 
-void ITreeNode::print(llvm::raw_ostream &stream, const unsigned tabNum) const {
-  std::string tabs = makeTabs(tabNum);
-  std::string tabs_next = appendTab(tabs);
+void ITreeNode::print(llvm::raw_ostream &stream,
+                      const unsigned paddingAmount) const {
+  std::string tabs = makeTabs(paddingAmount);
+  std::string tabsNext = appendTab(tabs);
 
   stream << tabs << "ITreeNode\n";
-  stream << tabs_next << "node Id = " << nodeId << "\n";
-  stream << tabs_next << "pathCondition = ";
+  stream << tabsNext << "node Id = " << nodeId << "\n";
+  stream << tabsNext << "pathCondition = ";
   if (pathCondition == 0) {
     stream << "NULL";
   } else {
     pathCondition->print(stream);
   }
   stream << "\n";
-  stream << tabs_next << "Left:\n";
+  stream << tabsNext << "Left:\n";
   if (!left) {
-    stream << tabs_next << "NULL\n";
+    stream << tabsNext << "NULL\n";
   } else {
-    left->print(stream, tabNum + 1);
+    left->print(stream, paddingAmount + 1);
     stream << "\n";
   }
-  stream << tabs_next << "Right:\n";
+  stream << tabsNext << "Right:\n";
   if (!right) {
-    stream << tabs_next << "NULL\n";
+    stream << tabsNext << "NULL\n";
   } else {
-    right->print(stream, tabNum + 1);
+    right->print(stream, paddingAmount + 1);
     stream << "\n";
   }
   if (dependency) {
-    stream << tabs_next << "------- Abstract Dependencies ----------\n";
-    dependency->print(stream, tabNum + 1);
+    stream << tabsNext << "------- Abstract Dependencies ----------\n";
+    dependency->print(stream, paddingAmount + 1);
   }
 }

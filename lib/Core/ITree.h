@@ -35,7 +35,7 @@ class PathCondition;
 
 class SubsumptionTableEntry;
 
-/// Time records for method running time statistics
+/// \brief Time records for method running time statistics
 class StatTimer {
   double amount;
   double lastRecorded;
@@ -59,7 +59,7 @@ public:
 
   double get() { return (amount / (double)CLOCKS_PER_SEC); }
 
-  /// @brief Utility function to represent double-precision floating point in
+  /// \brief Utility function to represent double-precision floating point in
   /// two decimal points.
   static std::string inTwoDecimalPoints(double n) {
     std::ostringstream stream;
@@ -76,14 +76,13 @@ public:
   }
 };
 
-
-/// Storage of search tree for displaying
+/// \brief The implementation of the search tree for outputting to .dot file.
 class SearchTree {
 
-  /// @brief counter for the next visited node id
+  /// \brief counter for the next visited node id
   static unsigned long nextNodeId;
 
-  /// @brief Global search tree instance
+  /// \brief Global search tree instance
   static SearchTree *instance;
 
   /// Encapsulates functionality of expression builder
@@ -174,22 +173,22 @@ class SearchTree {
   class Node {
     friend class SearchTree;
 
-    /// @brief Interpolation tree node id
+    /// \brief Interpolation tree node id
     uintptr_t iTreeNodeId;
 
-    /// @brief The node id, also the order in which it is traversed
+    /// \brief The node id, also the order in which it is traversed
     unsigned long nodeId;
 
-    /// @brief False and true children of this node
+    /// \brief False and true children of this node
     SearchTree::Node *falseTarget, *trueTarget;
 
-    /// @brief Indicates that node is subsumed
+    /// \brief Indicates that node is subsumed
     bool subsumed;
 
-    /// @brief Conditions under which this node is visited from its parent
+    /// \brief Conditions under which this node is visited from its parent
     std::map<PathCondition *, std::pair<std::string, bool> > pathConditionTable;
 
-    /// @brief Human-readable identifier of this node
+    /// \brief Human-readable identifier of this node
     std::string name;
 
     Node(uintptr_t nodeId)
@@ -286,40 +285,40 @@ public:
 
   static void setAsCore(PathCondition *pathCondition);
 
-  /// @brief Save the graph
+  /// \brief Save the graph
   static void save(std::string dotFileName);
 };
 
 /**/
 
+/// \brief A node in a singly-linked list of conditions which constitute the
+/// path condition.
 class PathCondition {
-  /// @brief KLEE expression
+  /// \brief KLEE expression
   ref<Expr> constraint;
 
-  /// @brief KLEE expression with variables (arrays) replaced by their shadows
+  /// \brief KLEE expression with variables (arrays) replaced by their shadows
   ref<Expr> shadowConstraint;
 
-  /// @brief If shadow constraint had been generated: We generate shadow
+  /// \brief If shadow constraint had been generated: We generate shadow
   /// constraint on demand only when the constraint is required in an
   /// interpolant.
   bool shadowed;
 
-  /// @brief The set of bound variables
+  /// \brief The set of bound variables
   std::set<const Array *> boundVariables;
 
-  /// @brief The dependency information for the current
-  /// interpolation tree node
+  /// \brief The dependency information for the current interpolation tree node
   Dependency *dependency;
 
-  /// @brief the condition value from which the
-  /// constraint was generated
+  /// \brief the condition value from which the constraint was generated
   VersionedValue *condition;
 
-  /// @brief When true, indicates that the constraint should be included
-  /// in the interpolant
+  /// \brief When true, indicates that the constraint should be included in the
+  /// interpolant
   bool core;
 
-  /// @brief Previous path condition
+  /// \brief Previous path condition
   PathCondition *tail;
 
 public:
@@ -338,14 +337,16 @@ public:
 
   ref<Expr> packInterpolant(std::set<const Array *> &replacements);
 
-  void dump();
+  void dump() const;
 
-  void print(llvm::raw_ostream &stream);
+  void print(llvm::raw_ostream &stream) const;
 };
 
+/// \brief The class that implements an entry (record) in the subsumption table.
 class SubsumptionTableEntry {
   friend class ITree;
 
+  /// \brief General substitution mechanism
   class ApplySubstitutionVisitor : public ExprVisitor {
   private:
     const std::map<ref<Expr>, ref<Expr> > &replacements;
@@ -366,13 +367,13 @@ class SubsumptionTableEntry {
     }
   };
 
-  /// @brief Statistics for actual solver call time in subsumption check
+  /// \brief Statistics for actual solver call time in subsumption check
   static StatTimer actualSolverCallTimer;
 
-  /// @brief The number of solver calls for subsumption checks
+  /// \brief The number of solver calls for subsumption checks
   static unsigned long checkSolverCount;
 
-  /// @brief The number of failed solver calls for subsumption checks
+  /// \brief The number of failed solver calls for subsumption checks
   static unsigned long checkSolverFailureCount;
 
   ref<Expr> interpolant;
@@ -387,45 +388,62 @@ class SubsumptionTableEntry {
 
   std::set<const Array *> existentials;
 
-  static bool hasExistentials(std::set<const Array *> &existentials,
-                              ref<Expr> expr);
+  /// \brief Test for the existence of a variable in a set in an expression.
+  ///
+  /// \param A set of variables (KLEE arrays).
+  /// \param The expression to test for the existence of the variables in the
+  /// set.
+  /// \return true if a variable in the set is found in the expression, false
+  /// otherwise.
+  static bool hasVariableInSet(std::set<const Array *> &existentials,
+                               ref<Expr> expr);
 
-  static bool hasFree(std::set<const Array *> &existentials, ref<Expr> expr);
+  /// \brief Test for the non-existence of a variable in a set in an expression.
+  ///
+  /// \param A set of variables (KLEE arrays).
+  /// \param The expression to test for the non-existence of the variables in
+  /// the set.
+  /// \return true if none of the variable in the set is found in the
+  /// expression, false otherwise.
+  static bool hasVariableNotInSet(std::set<const Array *> &existentials,
+                                  ref<Expr> expr);
 
-  static bool containShadowExpr(ref<Expr> expr, ref<Expr> shadowExpr);
+  /// \brief Determines if a subexpression is in an expression
+  static bool hasSubExpression(ref<Expr> expr, ref<Expr> subExpr);
 
+  /// \brief Replace a sub-expression with another within an original expression
   static ref<Expr> replaceExpr(ref<Expr> originalExpr, ref<Expr> replacedExpr,
-                               ref<Expr> withExpr);
+                               ref<Expr> replacementExpr);
 
-  /// @brief Simplifies the interpolant condition in subsumption check
-  /// whenever it contains constant equalities or disequalities.
+  /// \brief Simplifies the interpolant condition in subsumption check whenever
+  /// it contains constant equalities or disequalities.
   static ref<Expr>
   simplifyInterpolantExpr(std::vector<ref<Expr> > &interpolantPack,
                           ref<Expr> expr);
 
-  /// @brief Simplifies the equality conditions in subsumption check
-  /// whenever it contains constant equalities.
+  /// \brief Simplifies the equality conditions in subsumption check whenever it
+  /// contains constant equalities.
   static ref<Expr> simplifyEqualityExpr(std::vector<ref<Expr> > &equalityPack,
                                         ref<Expr> expr);
 
-  static ref<Expr> simplifyWithFourierMotzkin(ref<Expr> existsExpr);
-
+  /// \brief Simplify if possible an existentially-quantified expression,
+  /// possibly removing the quantification.
   static ref<Expr> simplifyExistsExpr(ref<Expr> existsExpr,
                                       bool &hasExistentialsOnly);
 
-  /// @brief Detect contradictory equalities in subsumption check beforehand to
+  /// \brief Detect contradictory equalities in subsumption check beforehand to
   /// reduce the expensive call to the actual solver.
   ///
   /// \return true if there is contradictory equality constraints between state
   /// constraints and query expression, otherwise, return false.
   static bool detectConflictPrimitives(ExecutionState &state, ref<Expr> query);
 
-  /// @brief Get a conjunction of equalities that are top-level conjuncts in the
+  /// \brief Get a conjunction of equalities that are top-level conjuncts in the
   /// query.
   ///
-  /// \param conjunction - The output conjunction of top-level conjuncts in the
-  /// query expression.
-  /// \param query - The query expression.
+  /// \param The output conjunction of top-level conjuncts in the query
+  /// expression.
+  /// \param The query expression.
   /// \return false if there is an equality conjunct that is simplifiable to
   /// false, true otherwise.
   static bool fetchQueryEqualityConjuncts(std::vector<ref<Expr> > &conjunction,
@@ -441,7 +459,7 @@ class SubsumptionTableEntry {
     return !interpolant.get() && concreteAddressStoreKeys.empty();
   }
 
-  /// @brief for printing method running time statistics
+  /// \brief For printing method running time statistics
   static void printStat(llvm::raw_ostream &stream);
 
 public:
@@ -455,23 +473,44 @@ public:
       TimingSolver *solver, ExecutionState &state, double timeout,
       std::pair<Dependency::ConcreteStore, Dependency::SymbolicStore> const);
 
-  void dump() const;
+  /// Tests if the argument is a variable. A variable here is defined to be
+  /// either a symbolic concatenation or a symbolic read. A concatenation in
+  /// KLEE concatenates reads, and hence can be considered to be a symbolic
+  /// read.
+  ///
+  /// \param A KLEE expression.
+  /// \return true if the parameter is either a concatenation or a read,
+  ///         otherwise, return false.
+  static bool isVariable(ref<Expr> expr) {
+    return llvm::isa<ConcatExpr>(expr.get()) || llvm::isa<ReadExpr>(expr.get());
+  }
+
+  ref<Expr> getInterpolant() const;
+
+  void dump() const {
+    this->print(llvm::errs());
+    llvm::errs() << "\n";
+  }
 
   void print(llvm::raw_ostream &stream) const;
 
 };
 
+/// \brief The interpolation tree node: The implementation of the tree node to
+/// be embedded in KLEE's execution state, which stores the data of
+/// interpolation functionalities.
 class ITreeNode {
   friend class ITree;
 
   friend class ExecutionState;
 
+  // Timers for profiling the execution times of the methods of this class.
   static StatTimer getInterpolantTimer;
   static StatTimer addConstraintTimer;
   static StatTimer splitTimer;
   static StatTimer executeTimer;
   static StatTimer bindCallArgumentsTimer;
-  static StatTimer popAbstractDependencyFrameTimer;
+  static StatTimer bindReturnValueTimer;
   static StatTimer getStoredExpressionsTimer;
   static StatTimer getStoredCoreExpressionsTimer;
   static StatTimer computeCoreAllocationsTimer;
@@ -481,10 +520,10 @@ private:
 
   typedef std::pair<expression_type, expression_type> pair_type;
 
-  /// @brief The path condition
+  /// \brief The path condition
   PathCondition *pathCondition;
 
-  /// @brief Abstract stack for value dependencies
+  /// \brief Abstract stack for value dependencies
   Dependency *dependency;
 
   ITreeNode *parent, *left, *right;
@@ -493,15 +532,24 @@ private:
 
   bool isSubsumed;
 
-  /// @brief Graph for displaying as .dot file
+  bool storable;
+
+  /// \brief Graph for displaying as .dot file
   SearchTree *graph;
 
-  void setNodeLocation(uintptr_t programPoint) {
+  void setNodeLocation(llvm::Instruction *instr) {
     if (!nodeId)
-      nodeId = programPoint;
+      nodeId = reinterpret_cast<uintptr_t>(instr);
+
+    // Disabling the subsumption check within KLEE's own API
+    // (callsites of klee_ and at any location within the klee_ function)
+    // by never store a table entry for KLEE's own API, marked with flag
+    // storable.
+    storable = !(instr->getParent()->getParent()->getName().substr(0, 5).equals(
+                    "klee_"));
   }
 
-  /// @brief for printing method running time statistics
+  /// \brief for printing method running time statistics
   static void printTimeStat(llvm::raw_ostream &stream);
 
   void execute(llvm::Instruction *instr, std::vector<ref<Expr> > &args);
@@ -509,34 +557,79 @@ private:
 public:
   uintptr_t getNodeId();
 
+  /// \brief Retrieve the interpolant for this node as KLEE expression object
+  ///
+  /// \param The replacement bound variables for replacing the variables in the
+  /// path condition.
+  /// \return The interpolant expression.
   ref<Expr> getInterpolant(std::set<const Array *> &replacements) const;
 
+  /// \brief Extend the path condition with another constraint
+  ///
+  /// \param The constraint to extend the current path condition with
+  /// \param The LLVM value that corresponds to the constraint
   void addConstraint(ref<Expr> &constraint, llvm::Value *value);
 
-  void abstractConstraints(ref<Expr> &constraint, llvm::Value *value,
+  /// \brief For abstracting constraints
+  ///
+  /// \param The constraint of the klee_abstract condition
+  /// \param The LLVM value that is the condition of klee_abstract
+  /// \param The constraints that are to be kept as their variables do not
+  /// intersect with the klee_abstract condition
+  void abstractConstraints(ref<Expr> &constraint, llvm::Value *condition,
                            std::vector<ref<Expr> > keptConstraints);
 
+  /// \brief Creates fresh interpolation data holder for the two given KLEE
+  /// execution states.
+  /// This method is to be invoked after KLEE splits its own state due to state
+  /// forking.
+  ///
+  /// \param The first KLEE execution state
+  /// \param The second KLEE execution state
   void split(ExecutionState *leftData, ExecutionState *rightData);
 
+  /// \brief Record call arguments in a function call
   void bindCallArguments(llvm::Instruction *site,
                          std::vector<ref<Expr> > &arguments);
 
-  void popAbstractDependencyFrame(llvm::CallInst *site, llvm::Instruction *inst,
-                                  ref<Expr> returnValue);
+  /// \brief This propagates the dependency due to the return value of a call
+  void bindReturnValue(llvm::CallInst *site, llvm::Instruction *inst,
+                       ref<Expr> returnValue);
 
+  /// \brief This retrieves the allocations known at this state, and the
+  /// expressions stored in the allocations.
+  ///
+  /// \return A pair of the store part indexed by constants, and the store part
+  /// indexed by symbolic expressions.
   std::pair<Dependency::ConcreteStore, Dependency::SymbolicStore>
   getStoredExpressions() const;
 
+  /// \brief This retrieves the allocations known at this state, and the
+  /// expressions stored in the allocations, as long as the allocation is
+  /// relevant as an interpolant. This function is typically used when creating
+  /// an entry in the subsumption table.
+  ///
+  /// \param The replacement bound variables: As the resulting expression will
+  /// be used for storing in the subsumption table, the variables need to be
+  /// replaced with the bound ones.
+  /// \return A pair of the store part indexed by constants, and the store part
+  /// indexed by symbolic expressions.
   std::pair<Dependency::ConcreteStore, Dependency::SymbolicStore>
   getStoredCoreExpressions(std::set<const Array *> &replacements) const;
 
-  void unsatCoreMarking(std::vector<ref<Expr> > unsatCore,
-                        ExecutionState &state);
+  /// \brief Marking the core constraints on the path condition, and all the
+  /// relevant values on the dependency graph, given an unsatistiability core.
+  void unsatCoreMarking(std::vector<ref<Expr> > unsatCore);
 
+  /// \brief Compute the allocations that are relevant for the interpolant.
   void computeCoreAllocations(AllocationGraph *g);
 
+  /// \brief Print the content of the tree node object to the LLVM error stream.
   void dump() const;
 
+  /// \brief Print the content of the tree node object into a stream.
+  ///
+  /// \param The stream to print the data to.
   void print(llvm::raw_ostream &stream) const;
 
 private:
@@ -547,11 +640,15 @@ private:
   void print(llvm::raw_ostream &stream, const unsigned tabNum) const;
 };
 
+/// \brief The top-level structure that implements the interpolation
+/// functionality
 class ITree {
   typedef std::vector<ref<Expr> > ExprList;
   typedef ExprList::iterator iterator;
   typedef ExprList::const_iterator const_iterator;
 
+  // Several static fields for profiling the execution time of this class's
+  // methods.
   static StatTimer setCurrentINodeTimer;
   static StatTimer removeTimer;
   static StatTimer subsumptionCheckTimer;
@@ -559,7 +656,7 @@ class ITree {
   static StatTimer splitTimer;
   static StatTimer executeOnNodeTimer;
 
-  // @brief Number of subsumption checks for statistical purposes
+  /// \brief Number of subsumption checks for statistical purposes
   static unsigned long subsumptionCheckCount;
 
   ITreeNode *currentINode;
@@ -569,10 +666,10 @@ class ITree {
   void printNode(llvm::raw_ostream &stream, ITreeNode *n,
                  std::string edges) const;
 
-  /// @brief Displays method running time statistics
+  /// \brief Displays method running time statistics
   static void printTimeStat(llvm::raw_ostream &stream);
 
-  /// @brief Displays subsumption table statistics
+  /// \brief Displays subsumption table statistics
   void printTableStat(llvm::raw_ostream &stream) const;
 
 public:
@@ -582,43 +679,76 @@ public:
 
   ~ITree();
 
+  /// \brief Store an entry into the subsumption table.
   void store(SubsumptionTableEntry *subItem);
 
-  void setCurrentINode(ExecutionState &state, uintptr_t programPoint);
+  /// \brief Set the reference to the KLEE state in the current interpolation
+  /// data holder (interpolation tree node) that is currently being processed.
+  /// This also sets the id of the interpolation tree node to be the given
+  /// pointer value.
+  ///
+  /// \param The KLEE execution state to associate the current node with.
+  void setCurrentINode(ExecutionState &state);
 
+  /// \brief Deletes the interpolation tree node
   void remove(ITreeNode *node);
 
+  /// \brief Invokes the subsumption check
   bool subsumptionCheck(TimingSolver *solver, ExecutionState &state,
                         double timeout);
 
+  /// \brief Mark the path condition in the interpolation tree node associated
+  /// with the given KLEE execution state.
   void markPathCondition(ExecutionState &state, TimingSolver *solver);
 
+  /// \brief Creates fresh interpolation data holder for the two given KLEE
+  /// execution states.
+  /// This method is to be invoked after KLEE splits its own state due to state
+  /// forking.
   std::pair<ITreeNode *, ITreeNode *>
   split(ITreeNode *parent, ExecutionState *left, ExecutionState *right);
 
+  /// \brief Abstractly execute an instruction of no argument for building
+  /// dependency information.
   void execute(llvm::Instruction *instr);
 
+  /// \brief Abstractly execute an instruction of one argument for building
+  /// dependency information.
   void execute(llvm::Instruction *instr, ref<Expr> arg1);
 
+  /// \brief Abstractly execute an instruction of two arguments for building
+  /// dependency information.
   void execute(llvm::Instruction *instr, ref<Expr> arg1, ref<Expr> arg2);
 
+  /// \brief Abstractly execute an instruction of three arguments for building
+  /// dependency information.
   void execute(llvm::Instruction *instr, ref<Expr> arg1, ref<Expr> arg2,
                ref<Expr> arg3);
 
+  /// \brief Abstractly execute an instruction of a number of arguments for
+  /// building dependency information.
   void execute(llvm::Instruction *instr, std::vector<ref<Expr> > &args);
 
+  /// \brief Abstractly execute a PHI instruction for building dependency
+  /// information.
   void executePHI(llvm::Instruction *instr, unsigned int incomingBlock,
                   ref<Expr> valueExpr);
 
+  /// \brief General method for executing an instruction for building dependency
+  /// information, given a particular interpolation tree node.
   static void executeOnNode(ITreeNode *node, llvm::Instruction *instr,
                             std::vector<ref<Expr> > &args);
 
-  void print(llvm::raw_ostream &stream);
+  /// \brief Print the content of the tree node object into a stream.
+  ///
+  /// \param The stream to print the data to.
+  void print(llvm::raw_ostream &stream) const;
 
-  void dump();
+  /// \brief Print the content of the tree object to the LLVM error stream
+  void dump() const;
 
-  /// @brief Outputs interpolation statistics to standard error.
-  void dumpInterpolationStat();
+  /// \brief Outputs interpolation statistics to LLVM error stream.
+  void dumpInterpolationStat() const;
 };
 }
 #endif /* ITREE_H_ */

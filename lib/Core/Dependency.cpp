@@ -8,15 +8,16 @@
 //===----------------------------------------------------------------------===//
 ///
 /// \file
-/// This file contains the implementation of the flow-insensitive dependency
-/// analysis to compute the allocations upon which the unsatisfiability core
-/// depends, which is used in computing the interpolant.
+/// This file contains the implementation of the dependency analysis to
+/// compute the allocations upon which the unsatisfiability core depends,
+/// which is used in computing the interpolant.
 ///
 //===----------------------------------------------------------------------===//
 
 #include "Dependency.h"
 
 #include "klee/CommandLine.h"
+#include "klee/Internal/Support/ErrorHandling.h"
 
 #if LLVM_VERSION_CODE >= LLVM_VERSION(3, 3)
 #include <llvm/IR/Constants.h>
@@ -138,11 +139,13 @@ ShadowArray::getShadowExpression(ref<Expr> expr,
         getShadowExpression(expr->getKid(1), replacements));
     break;
   }
-  default: {
-    assert(0 && "unhandled Expr type");
-    ret = expr;
+  case Expr::NotOptimized: {
+    ret = NotOptimizedExpr::create(
+        getShadowExpression(expr->getKid(0), replacements));
     break;
   }
+  default:
+    assert(!"unhandled Expr type");
   }
 
   return ret;
@@ -167,24 +170,6 @@ void VersionedAllocation::print(llvm::raw_ostream &stream) const {
   stream << ":";
   address->print(stream);
   stream << "]#" << reinterpret_cast<uintptr_t>(this);
-}
-
-/**/
-
-llvm::Value *EnvironmentAllocation::canonicalAllocation = 0;
-
-bool EnvironmentAllocation::hasAllocationSite(llvm::Value *site,
-                                              ref<Expr> &_address) const {
-  return Dependency::Util::isEnvironmentAllocation(site) && address == _address;
-}
-
-void EnvironmentAllocation::print(llvm::raw_ostream &stream) const {
-  stream << "A";
-  if (this->Allocation::core)
-    stream << "(I)";
-  stream << "[@__environ:";
-  address->print(stream);
-  stream << "]" << reinterpret_cast<uintptr_t>(this);
 }
 
 /**/
@@ -410,18 +395,7 @@ VersionedValue *Dependency::getNewVersionedValue(llvm::Value *value,
 
 Allocation *Dependency::getInitialAllocation(llvm::Value *allocation,
                                              ref<Expr> &address) {
-  Allocation *ret;
-  if (Util::isEnvironmentAllocation(allocation)) {
-    ret = new EnvironmentAllocation(allocation, address);
-
-    // An environment allocation is a special kind of composite allocation
-    // ret->getSite() will give us the right canonical allocation
-    // for environment allocations.
-    versionedAllocationsList.push_back(ret);
-    return ret;
-  }
-
-  ret = new VersionedAllocation(allocation, address);
+  Allocation *ret = new VersionedAllocation(allocation, address);
   versionedAllocationsList.push_back(ret);
   return ret;
 }
@@ -485,13 +459,14 @@ Dependency::getStoredExpressions(std::set<const Array *> &replacements,
           llvm::Value *base = (*allocIter)->getSite();
           uint64_t uintAddress = (*allocIter)->getUIntAddress();
           ref<Expr> address = (*allocIter)->getAddress();
-          if (NoExistential) {
-            concreteStore[base][uintAddress] = AddressValuePair(address, expr);
-          } else {
+#ifdef SUPPORT_Z3
+          if (!NoExistential) {
             concreteStore[base][uintAddress] = AddressValuePair(
                 ShadowArray::getShadowExpression(address, replacements),
                 ShadowArray::getShadowExpression(expr, replacements));
-          }
+          } else
+#endif
+            concreteStore[base][uintAddress] = AddressValuePair(address, expr);
         }
       } else {
         ref<Expr> address = (*allocIter)->getAddress();
@@ -502,13 +477,14 @@ Dependency::getStoredExpressions(std::set<const Array *> &replacements,
         } else if (v->isCore()) {
           ref<Expr> expr = v->getExpression();
           llvm::Value *base = v->getValue();
-          if (NoExistential) {
-            symbolicStore[base].push_back(AddressValuePair(address, expr));
-          } else {
+#ifdef SUPPORT_Z3
+          if (!NoExistential) {
             symbolicStore[base].push_back(AddressValuePair(
                 ShadowArray::getShadowExpression(address, replacements),
                 ShadowArray::getShadowExpression(expr, replacements)));
-          }
+          } else
+#endif
+            symbolicStore[base].push_back(AddressValuePair(address, expr));
         }
       }
     }
@@ -530,8 +506,13 @@ VersionedValue *Dependency::getLatestValue(llvm::Value *value,
     }
   }
 
-  if (llvm::isa<llvm::Constant>(value) &&
-      !llvm::isa<llvm::PointerType>(value->getType()))
+  // A global value is a constant: Its value is constant throughout execution,
+  // but
+  // indeterministic. In case this was a non-global-value (normal) constant, we
+  // immediately return with a versioned value, as dependencies are not
+  // important. However, the dependencies of global values should be searched
+  // for in the ancestors (later) as they need to be consistent in an execution.
+  if (llvm::isa<llvm::Constant>(value) && !llvm::isa<llvm::GlobalValue>(value))
     return getNewVersionedValue(value, valueExpr);
 
   for (std::vector<VersionedValue *>::const_reverse_iterator
@@ -542,10 +523,17 @@ VersionedValue *Dependency::getLatestValue(llvm::Value *value,
       return *it;
   }
 
+  VersionedValue *ret = 0;
   if (parentDependency)
-    return parentDependency->getLatestValue(value, valueExpr);
+    ret = parentDependency->getLatestValue(value, valueExpr);
 
-  return 0;
+  if (!ret && llvm::isa<llvm::GlobalValue>(value)) {
+    // We could not find the global value: we register it anew.
+    ret = getNewVersionedValue(value, valueExpr);
+    if (value->getType()->isPointerTy())
+      addPointerEquality(ret, getInitialAllocation(value, valueExpr));
+  }
+  return ret;
 }
 
 VersionedValue *
@@ -568,24 +556,6 @@ Dependency::getLatestValueNoConstantCheck(llvm::Value *value) const {
 
 Allocation *Dependency::getLatestAllocation(llvm::Value *allocation,
                                             ref<Expr> address) const {
-
-  if (Util::isEnvironmentAllocation(allocation)) {
-    // Search for existing environment allocation
-    for (std::vector<Allocation *>::const_reverse_iterator
-             it = versionedAllocationsList.rbegin(),
-             itEnd = versionedAllocationsList.rend();
-         it != itEnd; ++it) {
-      if (llvm::isa<EnvironmentAllocation>(*it))
-        return *it;
-    }
-
-    if (parentDependency)
-      return parentDependency->getLatestAllocation(allocation, address);
-
-    return 0;
-  }
-
-  // The case for versioned allocation
   for (std::vector<Allocation *>::const_reverse_iterator
            it = versionedAllocationsList.rbegin(),
            itEnd = versionedAllocationsList.rend();
@@ -803,43 +773,51 @@ Dependency::populateArgumentValuesList(llvm::CallInst *site,
   return argumentValuesList;
 }
 
-bool Dependency::buildLoadDependency(llvm::Value *fromValue,
-                                     ref<Expr> fromValueExpr,
-                                     llvm::Value *toValue,
-                                     ref<Expr> toValueExpr) {
-  VersionedValue *arg = getLatestValue(fromValue, fromValueExpr);
-  if (!arg)
+bool Dependency::buildLoadDependency(llvm::Value *address,
+                                     ref<Expr> addressExpr, llvm::Value *value,
+                                     ref<Expr> valueExpr) {
+  VersionedValue *addressValue = getLatestValue(address, addressExpr);
+  if (!addressValue)
     return false;
 
-  std::vector<Allocation *> allocList = resolveAllocationTransitively(arg);
+  std::vector<Allocation *> addressAllocList =
+      resolveAllocationTransitively(addressValue);
 
-  if (allocList.empty())
+  if (addressAllocList.empty())
     assert(!"operand is not an allocation");
 
-  for (std::vector<Allocation *>::iterator it0 = allocList.begin(),
-                                           it0End = allocList.end();
-       it0 != it0End; ++it0) {
-    std::vector<VersionedValue *> valList = stores(*it0);
+  for (std::vector<Allocation *>::iterator
+           allocIter = addressAllocList.begin(),
+           allocIterEnd = addressAllocList.end();
+       allocIter != allocIterEnd; ++allocIter) {
 
-    if (valList.empty())
+    std::vector<VersionedValue *> storedValue = stores(*allocIter);
+
+    if (storedValue.empty())
       // We could not find the stored value, create
       // a new one.
-      updateStore(*it0, getNewVersionedValue(toValue, toValueExpr));
+      updateStore(*allocIter, getNewVersionedValue(value, valueExpr));
     else {
-      for (std::vector<VersionedValue *>::iterator it1 = valList.begin(),
-                                                   it1End = valList.end();
-           it1 != it1End; ++it1) {
-        std::vector<Allocation *> alloc2 = resolveAllocationTransitively(*it1);
+      for (std::vector<VersionedValue *>::iterator
+               storedValueIter = storedValue.begin(),
+               storedValueIterEnd = storedValue.end();
+           storedValueIter != storedValueIterEnd; ++storedValueIter) {
+        // Here we check if the stored value was an address, in
+        // which case we add pointer equality. Otherwise, we build
+        // value dependency between the return value and the stored value.
+        std::vector<Allocation *> storedValueAddressViews =
+            resolveAllocationTransitively(*storedValueIter);
 
-        if (alloc2.empty())
-          addDependencyViaAllocation(
-              *it1, getNewVersionedValue(toValue, toValueExpr), *it0);
+        if (storedValueAddressViews.empty())
+          addDependencyViaAllocation(*storedValueIter,
+                                     getNewVersionedValue(value, valueExpr),
+                                     *allocIter);
         else {
-          for (std::vector<Allocation *>::iterator it2 = alloc2.begin(),
-                                                   it2End = alloc2.end();
+          for (std::vector<Allocation *>::iterator
+                   it2 = storedValueAddressViews.begin(),
+                   it2End = storedValueAddressViews.end();
                it2 != it2End; ++it2) {
-            addPointerEquality(getNewVersionedValue(toValue, toValueExpr),
-                               *it2);
+            addPointerEquality(getNewVersionedValue(value, valueExpr), *it2);
           }
         }
       }
@@ -875,13 +853,77 @@ void Dependency::execute(llvm::Instruction *instr,
   if (llvm::isa<llvm::CallInst>(instr)) {
     llvm::CallInst *callInst = llvm::dyn_cast<llvm::CallInst>(instr);
     llvm::Function *f = callInst->getCalledFunction();
+
+    if (!f) {
+      // Handles the case when the callee is wrapped within another expression
+      llvm::ConstantExpr *calledValue =
+          llvm::dyn_cast<llvm::ConstantExpr>(callInst->getCalledValue());
+      if (calledValue && calledValue->getOperand(0)) {
+        f = llvm::dyn_cast<llvm::Function>(calledValue->getOperand(0));
+      }
+    }
+
     if (f && f->getIntrinsicID() == llvm::Intrinsic::not_intrinsic) {
-      llvm::StringRef calleeName = callInst->getCalledFunction()->getName();
+      llvm::StringRef calleeName = f->getName();
       // FIXME: We need a more precise way to determine invoked method
       // rather than just using the name.
       std::string getValuePrefix("klee_get_value");
 
-      if (calleeName.equals("malloc") && args.size() == 1) {
+      if ((calleeName.equals("getpagesize") && args.size() == 1) ||
+          (calleeName.equals("ioctl") && args.size() == 4) ||
+          (calleeName.equals("__ctype_b_loc") && args.size() == 1) ||
+          (calleeName.equals("__ctype_b_locargs") && args.size() == 1) ||
+          calleeName.equals("puts") || calleeName.equals("fflush") ||
+          calleeName.equals("_Znwm") || calleeName.equals("_Znam") ||
+          calleeName.equals("strcmp") || calleeName.equals("strncmp") ||
+          (calleeName.equals("__errno_location") && args.size() == 1) ||
+          (calleeName.equals("geteuid") && args.size() == 1)) {
+        getNewVersionedValue(instr, args.at(0));
+      } else if (calleeName.equals("_ZNSi5seekgElSt12_Ios_Seekdir") &&
+                 args.size() == 4) {
+        VersionedValue *returnValue = getNewVersionedValue(instr, args.at(0));
+        for (unsigned i = 0; i < 3; ++i) {
+          VersionedValue *arg =
+              getLatestValue(instr->getOperand(i), args.at(i + 1));
+          if (arg)
+            addDependency(arg, returnValue);
+        }
+      } else if (calleeName.equals(
+                     "_ZNSt13basic_fstreamIcSt11char_traitsIcEE7is_openEv") &&
+                 args.size() == 2) {
+        VersionedValue *returnValue = getNewVersionedValue(instr, args.at(0));
+        VersionedValue *arg = getLatestValue(instr->getOperand(0), args.at(1));
+        if (arg)
+          addDependency(arg, returnValue);
+      } else if (calleeName.equals("_ZNSi5tellgEv") && args.size() == 2) {
+        VersionedValue *returnValue = getNewVersionedValue(instr, args.at(0));
+        VersionedValue *arg = getLatestValue(instr->getOperand(0), args.at(1));
+        if (arg)
+          addDependency(arg, returnValue);
+      } else if ((calleeName.equals("powl") && args.size() == 3) ||
+                 (calleeName.equals("gettimeofday") && args.size() == 3)) {
+        VersionedValue *returnValue = getNewVersionedValue(instr, args.at(0));
+        for (unsigned i = 0; i < 2; ++i) {
+          VersionedValue *arg =
+              getLatestValue(instr->getOperand(i), args.at(i + 1));
+          if (arg)
+            addDependency(arg, returnValue);
+        }
+      } else if (calleeName.equals("malloc") && args.size() == 1) {
+        // malloc is an allocation-type instruction: its single argument is the
+        // return address.
+        addPointerEquality(getNewVersionedValue(instr, args.at(0)),
+                           getInitialAllocation(instr, args.at(0)));
+      } else if (calleeName.equals("realloc") && args.size() == 1) {
+        // realloc is an allocation-type instruction: its single argument is the
+        // return address.
+        VersionedValue *returnValue = getNewVersionedValue(instr, args.at(0));
+        VersionedValue *arg = getLatestValue(instr->getOperand(0), args.at(0));
+        if (arg)
+          addDependency(arg, returnValue);
+      } else if (calleeName.equals("calloc") && args.size() == 1) {
+        // calloc is an allocation-type instruction: its single argument is the
+        // return address.
         addPointerEquality(getNewVersionedValue(instr, args.at(0)),
                            getInitialAllocation(instr, args.at(0)));
       } else if (calleeName.equals("syscall") && args.size() >= 2) {
@@ -889,19 +931,59 @@ void Dependency::execute(llvm::Instruction *instr,
         for (unsigned i = 0; i + 1 < args.size(); ++i) {
           VersionedValue *arg =
               getLatestValue(instr->getOperand(i), args.at(i + 1));
-          addDependency(arg, returnValue);
+          if (arg)
+            addDependency(arg, returnValue);
         }
       } else if (std::mismatch(getValuePrefix.begin(), getValuePrefix.end(),
                                calleeName.begin()).first ==
                      getValuePrefix.end() &&
                  args.size() == 2) {
         VersionedValue *returnValue = getNewVersionedValue(instr, args.at(0));
-        VersionedValue *arg =
-            getNewVersionedValue(instr->getOperand(0), args.at(1));
-        addDependency(arg, returnValue);
+        VersionedValue *arg = getLatestValue(instr->getOperand(0), args.at(1));
+        if (arg)
+          addDependency(arg, returnValue);
       } else if (calleeName.equals("getenv") && args.size() == 2) {
         addPointerEquality(getNewVersionedValue(instr, args.at(0)),
                            getInitialAllocation(instr, args.at(0)));
+      } else if (calleeName.equals("printf") && args.size() >= 2) {
+        VersionedValue *returnValue = getNewVersionedValue(instr, args.at(0));
+        VersionedValue *formatArg =
+            getLatestValue(instr->getOperand(0), args.at(1));
+        if (formatArg)
+          addDependency(formatArg, returnValue);
+        for (unsigned i = 2, argsNum = args.size(); i < argsNum; ++i) {
+          VersionedValue *arg =
+              getLatestValue(instr->getOperand(i - 1), args.at(i));
+          if (arg)
+            addDependency(arg, returnValue);
+        }
+      } else if (calleeName.equals("vprintf") && args.size() == 3) {
+        VersionedValue *returnValue = getNewVersionedValue(instr, args.at(0));
+        VersionedValue *arg0 = getLatestValue(instr->getOperand(0), args.at(1));
+        VersionedValue *arg1 = getLatestValue(instr->getOperand(1), args.at(2));
+        if (arg0)
+          addDependency(arg0, returnValue);
+        if (arg1)
+          addDependency(arg1, returnValue);
+      } else if (((calleeName.equals("fchmodat") && args.size() == 5)) ||
+                 (calleeName.equals("fchownat") && args.size() == 6)) {
+        VersionedValue *returnValue = getNewVersionedValue(instr, args.at(0));
+        for (unsigned i = 0; i < 2; ++i) {
+          VersionedValue *arg =
+              getLatestValue(instr->getOperand(i), args.at(i + 1));
+          if (arg)
+            addDependency(arg, returnValue);
+        }
+      } else {
+        // Default external function handler: We ignore functions that return
+        // void, and we DO NOT build dependency of return value to the
+        // arguments.
+        if (!instr->getType()->isVoidTy()) {
+          assert(args.size() && "non-void call missing return expression");
+          klee_warning("using default handler for external function %s",
+                       calleeName.str().c_str());
+          getNewVersionedValue(instr, args.at(0));
+        }
       }
     }
     return;
@@ -934,56 +1016,6 @@ void Dependency::execute(llvm::Instruction *instr,
                          getInitialAllocation(instr, argExpr));
       break;
     }
-    case llvm::Instruction::GetElementPtr: {
-      if (llvm::isa<llvm::Constant>(instr->getOperand(0))) {
-        Allocation *actualAllocation =
-            getLatestAllocation(instr->getOperand(0), argExpr);
-        if (!actualAllocation)
-          actualAllocation =
-              getInitialAllocation(instr->getOperand(0), argExpr);
-
-        // We simply propagate the pointer to the current
-        addPointerEquality(getNewVersionedValue(instr, argExpr),
-                           actualAllocation);
-        break;
-      }
-
-      VersionedValue *base = getLatestValue(instr->getOperand(0), argExpr);
-      assert(base != 0 && "operand not found");
-
-      std::vector<Allocation *> baseAllocations =
-          resolveAllocationTransitively(base);
-
-      // Allocations
-      if (baseAllocations.size() > 0) {
-        VersionedValue *newValue = getNewVersionedValue(instr, argExpr);
-        for (std::vector<Allocation *>::iterator it = baseAllocations.begin(),
-                                                 itEnd = baseAllocations.end();
-             it != itEnd; ++it) {
-          // We check existing allocations with the same site as the base,
-          // but with the address given as argExpr
-          Allocation *actualAllocation =
-              getLatestAllocation((*it)->getSite(), argExpr);
-          if (!actualAllocation) {
-            actualAllocation = getInitialAllocation((*it)->getSite(), argExpr);
-          }
-          addPointerEquality(newValue, actualAllocation);
-        }
-      } else {
-        // Could not resolve to argument to an address,
-        // simply add flow dependency
-        std::vector<VersionedValue *> vec = directFlowSources(base);
-        if (vec.size() > 0) {
-          VersionedValue *newValue = getNewVersionedValue(instr, argExpr);
-          for (std::vector<VersionedValue *>::iterator it = vec.begin(),
-                                                       itEnd = vec.end();
-               it != itEnd; ++it) {
-            addDependency((*it), newValue);
-          }
-        }
-      }
-      break;
-    }
     case llvm::Instruction::Trunc:
     case llvm::Instruction::ZExt:
     case llvm::Instruction::SExt:
@@ -1009,6 +1041,12 @@ void Dependency::execute(llvm::Instruction *instr,
           addPointerEquality(
               getNewVersionedValue(instr, argExpr),
               getInitialAllocation(instr->getOperand(0), argExpr));
+        } else if (llvm::isa<llvm::Argument>(instr->getOperand(0))) {
+          VersionedValue *arg =
+              getNewVersionedValue(instr->getOperand(0), argExpr);
+          VersionedValue *returnValue = getNewVersionedValue(instr, argExpr);
+          if (arg)
+            addDependency(arg, returnValue);
         } else {
           assert(!"operand not found");
         }
@@ -1025,17 +1063,8 @@ void Dependency::execute(llvm::Instruction *instr,
 
     switch (instr->getOpcode()) {
     case llvm::Instruction::Load: {
-      if (Util::isEnvironmentAllocation(instr)) {
-        // The load corresponding to a load of the environment address
-        // that was never allocated within this program.
-        addPointerEquality(getNewVersionedValue(instr, valueExpr),
-                           getNewAllocationVersion(instr, address));
-        break;
-      }
-
       VersionedValue *addressValue =
           getLatestValue(instr->getOperand(0), address);
-
       if (addressValue) {
         std::vector<Allocation *> allocations =
             resolveAllocationTransitively(addressValue);
@@ -1098,6 +1127,80 @@ void Dependency::execute(llvm::Instruction *instr,
 
       break;
     }
+    case llvm::Instruction::GetElementPtr: {
+      if (llvm::isa<llvm::Constant>(instr->getOperand(0))) {
+        // We look up existing allocations with the same site as the argument,
+        // but with the address given as valueExpr (the value of the
+        // getelementptr instruction itself).
+        Allocation *actualAllocation =
+            getLatestAllocation(instr->getOperand(0), valueExpr);
+        if (!actualAllocation)
+          actualAllocation =
+              getInitialAllocation(instr->getOperand(0), valueExpr);
+
+        // We simply propagate the pointer to the current
+        addPointerEquality(getNewVersionedValue(instr, valueExpr),
+                           actualAllocation);
+        break;
+      }
+
+      VersionedValue *addressValue =
+          getLatestValue(instr->getOperand(0), address);
+
+      if (!addressValue) {
+        // We define a new base anyway in case the operand was not found and was
+        // an inbound.
+        llvm::GetElementPtrInst *gepInst =
+            llvm::dyn_cast<llvm::GetElementPtrInst>(instr);
+        assert(gepInst->isInBounds() && "operand not found");
+        addressValue = getNewVersionedValue(instr->getOperand(0), address);
+      }
+
+      std::vector<Allocation *> addressAllocations =
+          resolveAllocationTransitively(addressValue);
+
+      // Allocations
+      if (addressAllocations.size() > 0) {
+        VersionedValue *newValue = getNewVersionedValue(instr, valueExpr);
+        for (std::vector<Allocation *>::iterator
+                 it = addressAllocations.begin(),
+                 itEnd = addressAllocations.end();
+             it != itEnd; ++it) {
+          // We check existing allocations with the same site as the allocation,
+          // but with the address given as valueExpr (the value of the
+          // getelementptr instruction itself).
+          Allocation *actualAllocation =
+              getLatestAllocation((*it)->getSite(), valueExpr);
+          if (!actualAllocation)
+            actualAllocation =
+                getInitialAllocation((*it)->getSite(), valueExpr);
+          addPointerEquality(newValue, actualAllocation);
+        }
+      } else {
+        // Here the base is not found as an address,
+        // try to add flow dependency between values
+        std::vector<VersionedValue *> directSources =
+            directFlowSources(addressValue);
+        if (directSources.size() > 0) {
+          VersionedValue *newValue = getNewVersionedValue(instr, valueExpr);
+          for (std::vector<VersionedValue *>::iterator
+                   it = directSources.begin(),
+                   itEnd = directSources.end();
+               it != itEnd; ++it) {
+            if (*it)
+              addDependency((*it), newValue);
+          }
+        } else {
+          // Here getelementptr forcibly uses a value not known to be an
+          // address, e.g., a loaded value, as an address. In this case, we then
+          // assume that the argument is a base allocation.
+          addPointerEquality(
+              getNewVersionedValue(instr, valueExpr),
+              getInitialAllocation(addressValue->getValue(), valueExpr));
+        }
+      }
+      break;
+    }
     default: { assert(!"unhandled binary instruction"); }
     }
     return;
@@ -1150,6 +1253,17 @@ void Dependency::execute(llvm::Instruction *instr,
       VersionedValue *op1 = getLatestValue(instr->getOperand(0), op1Expr);
       VersionedValue *op2 = getLatestValue(instr->getOperand(1), op2Expr);
 
+      if (!op1 &&
+          (instr->getParent()->getParent()->getName().equals("klee_range") &&
+           instr->getOperand(0)->getName().equals("start"))) {
+        op1 = getNewVersionedValue(instr->getOperand(0), op1Expr);
+      }
+      if (!op2 &&
+          (instr->getParent()->getParent()->getName().equals("klee_range") &&
+           instr->getOperand(1)->getName().equals("end"))) {
+        op2 = getNewVersionedValue(instr->getOperand(1), op2Expr);
+      }
+
       VersionedValue *newValue = 0;
       if (op1) {
         newValue = getNewVersionedValue(instr, result);
@@ -1181,7 +1295,9 @@ void Dependency::executePHI(llvm::Instruction *instr,
   VersionedValue *val = getLatestValue(llvmArgValue, valueExpr);
   if (val) {
     addDependency(val, getNewVersionedValue(instr, valueExpr));
-  } else if (!llvm::isa<llvm::Constant>(llvmArgValue)) {
+  } else if (llvm::isa<llvm::Constant>(llvmArgValue)) {
+    getNewVersionedValue(instr, valueExpr);
+  } else {
     assert(!"operand not found");
   }
 }
@@ -1253,6 +1369,10 @@ void Dependency::markAllValues(AllocationGraph *g, llvm::Value *val) {
         }
       }
     }
+
+    if (llvm::isa<llvm::Constant>(val))
+      return;
+
     assert(!"unknown value");
   }
 
@@ -1351,23 +1471,27 @@ Dependency::directAllocationSources(VersionedValue *target) const {
   return ret;
 }
 
-void Dependency::recursivelyBuildAllocationGraph(AllocationGraph *g,
-                                                 VersionedValue *target,
-                                                 Allocation *alloc) const {
-  if (!target)
+void Dependency::recursivelyBuildAllocationGraph(
+    AllocationGraph *g, VersionedValue *source, Allocation *target,
+    std::set<Allocation *> parentTargets) const {
+  if (!source)
     return;
 
   std::vector<Allocation *> ret;
   std::map<VersionedValue *, Allocation *> sourceEdges =
-      directAllocationSources(target);
+      directAllocationSources(source);
 
   for (std::map<VersionedValue *, Allocation *>::iterator
            it = sourceEdges.begin(),
            itEnd = sourceEdges.end();
        it != itEnd; ++it) {
-    if (it->second != alloc) {
-      g->addNewEdge(it->second, alloc);
-      recursivelyBuildAllocationGraph(g, it->first, it->second);
+    // Here we prevent construction of cycle in the graph by checking if the
+    // source equals target or included as an ancestor.
+    if (it->second != target &&
+        parentTargets.find(it->second) == parentTargets.end()) {
+      g->addNewEdge(it->second, target);
+      parentTargets.insert(target);
+      recursivelyBuildAllocationGraph(g, it->first, it->second, parentTargets);
     }
   }
 }
@@ -1383,7 +1507,8 @@ void Dependency::buildAllocationGraph(AllocationGraph *g,
            itEnd = sourceEdges.end();
        it != itEnd; ++it) {
     g->addNewSink(it->second);
-    recursivelyBuildAllocationGraph(g, it->first, it->second);
+    recursivelyBuildAllocationGraph(g, it->first, it->second,
+                                    std::set<Allocation *>());
   }
 }
 
@@ -1391,8 +1516,9 @@ void Dependency::print(llvm::raw_ostream &stream) const {
   this->print(stream, 0);
 }
 
-void Dependency::print(llvm::raw_ostream &stream, const unsigned tabNum) const {
-  std::string tabs = makeTabs(tabNum);
+void Dependency::print(llvm::raw_ostream &stream,
+                       const unsigned paddingAmount) const {
+  std::string tabs = makeTabs(paddingAmount);
   stream << tabs << "EQUALITIES:";
   std::vector<PointerEquality *>::const_iterator equalityListBegin =
       equalityList.begin();
@@ -1433,7 +1559,7 @@ void Dependency::print(llvm::raw_ostream &stream, const unsigned tabNum) const {
 
   if (parentDependency) {
     stream << "\n" << tabs << "--------- Parent Dependencies ----------\n";
-    parentDependency->print(stream, tabNum);
+    parentDependency->print(stream, paddingAmount);
   }
 }
 
@@ -1451,11 +1577,6 @@ void Dependency::Util::deletePointerVector(std::vector<T *> &list) {
 
 template <typename K, typename T>
 void Dependency::Util::deletePointerMap(std::map<K *, T *> &map) {
-  typedef typename std::map<K *, T *>::iterator IteratorType;
-
-  for (IteratorType it = map.begin(), itEnd = map.end(); it != itEnd; ++it) {
-    map.erase(it);
-  }
   map.clear();
 }
 
@@ -1465,23 +1586,9 @@ void Dependency::Util::deletePointerMapWithVectorValue(
   typedef typename std::map<K *, std::vector<T *> >::iterator IteratorType;
 
   for (IteratorType it = map.begin(), itEnd = map.end(); it != itEnd; ++it) {
-    map.erase(it);
+    it->second.clear();
   }
   map.clear();
-}
-
-bool Dependency::Util::isEnvironmentAllocation(llvm::Value *site) {
-  llvm::LoadInst *inst = llvm::dyn_cast<llvm::LoadInst>(site);
-
-  if (!inst)
-    return false;
-
-  llvm::Value *address = inst->getOperand(0);
-  if (llvm::isa<llvm::Constant>(address) && address->getName() == "__environ") {
-    return true;
-  }
-
-  return false;
 }
 
 bool Dependency::Util::isMainArgument(llvm::Value *site) {
@@ -1498,9 +1605,9 @@ bool Dependency::Util::isMainArgument(llvm::Value *site) {
 
 /**/
 
-std::string makeTabs(const unsigned tabNum) {
+std::string makeTabs(const unsigned paddingAmount) {
   std::string tabsString;
-  for (unsigned i = 0; i < tabNum; i++) {
+  for (unsigned i = 0; i < paddingAmount; ++i) {
     tabsString += appendTab(tabsString);
   }
   return tabsString;

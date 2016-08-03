@@ -1685,9 +1685,8 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
       // of the solver to decide its satisfiability, and no generation
       // of the unsatisfiability core.
       if (INTERPOLATION_ENABLED && ((!branches.first && branches.second) ||
-                                    (branches.first && !branches.second))) {
+                                    (branches.first && !branches.second)))
         interpTree->execute(i);
-      }
     }
     break;
   }
@@ -2208,6 +2207,7 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
   case Instruction::GetElementPtr: {
     KGEPInstruction *kgepi = static_cast<KGEPInstruction*>(ki);
     ref<Expr> base = eval(ki, 0, state).value;
+    ref<Expr> oldBase = base;
 
     for (std::vector< std::pair<unsigned, uint64_t> >::iterator 
            it = kgepi->indices.begin(), ie = kgepi->indices.end(); 
@@ -2225,7 +2225,7 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
 
     // Update dependency
     if (INTERPOLATION_ENABLED)
-      interpTree->execute(i, base);
+      interpTree->execute(i, base, oldBase);
     break;
   }
 
@@ -2908,8 +2908,7 @@ void Executor::run(ExecutionState &initialState) {
       // We synchronize the node id to that of the state. The node id
       // is set only when it was the address of the first instruction
       // in the node.
-      interpTree->setCurrentINode(state,
-                                  reinterpret_cast<uintptr_t>(state.pc->inst));
+      interpTree->setCurrentINode(state);
 
       // Uncomment the following statements to show the state
       // of the interpolation tree and the active node.
@@ -3851,9 +3850,11 @@ void Executor::runFunctionAsMain(Function *f,
     SearchTree::save(interpreterHandler->getOutputFilename("tree.dot"));
     SearchTree::deallocate();
 
+#ifdef SUPPORT_Z3
     // Print interpolation time statistics
     if (InterpolationStat)
       interpTree->dumpInterpolationStat();
+#endif
 
     delete interpTree;
     interpTree = 0;
