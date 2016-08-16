@@ -58,6 +58,9 @@
 
 #include <sstream>
 
+#include <llvm/Analysis/RegionInfo.h>
+#include <llvm/InitializePasses.h>
+
 using namespace llvm;
 using namespace klee;
 
@@ -201,6 +204,23 @@ static void injectStaticConstructorsAndDestructors(Module *m) {
     }
   }
 }
+//////////////////////////////////////////////////////////////// Begin auxiliary taint region Function pass
+// TaintRegionsInfo - The first implementation, without getAnalysisUsage.
+struct TaintRegionsInfoPass : public RegionInfo {
+  static char ID; // Pass identification, replacement for typeid
+  std::map<BasicBlock *, int> *br; 
+  TaintRegionsInfoPass(std::map<llvm::BasicBlock *, int > *regions) : br(regions) { llvm::errs() <<"WTF!@"; }
+
+  virtual bool runOnFunction(Function &F){
+      bool result = RegionInfo::runOnFunction(F);
+      for (Function::iterator bb = F.begin(), e = F.end(); bb != e; ++bb){
+          br->insert(std::make_pair(bb, this->getRegionFor(bb)->getDepth()));
+	  }
+      return result;
+  }
+  virtual const char* getPassName() const { return "TaintRegionInfo"; }
+};
+//////////////////////////////////////////////////////////////// End auxiliary taint region Function pass
 
 #if LLVM_VERSION_CODE < LLVM_VERSION(3, 3)
 static void forceImport(Module *m, const char *name, LLVM_TYPE_Q Type *retType,
@@ -309,6 +329,14 @@ void KModule::prepare(const Interpreter::ModuleOptions &opts,
 
   if (opts.Optimize)
     Optimize(module);
+
+  //Computing region info
+  if (opts.CalculateRegions){
+    PassManager pm;
+    pm.add(new TaintRegionsInfoPass(&this->regions));
+    pm.run(*module);
+    //this->regions contains SESE region iformation for the module 
+  }
 #if LLVM_VERSION_CODE < LLVM_VERSION(3, 3)
   // Force importing functions required by intrinsic lowering. Kind of
   // unfortunate clutter when we don't need them but we won't know

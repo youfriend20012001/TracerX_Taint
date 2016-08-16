@@ -67,6 +67,17 @@ using namespace llvm;
 using namespace klee;
 
 namespace {
+
+  cl::opt<Interpreter::TaintConfig::Config>
+  Taint("taint", 
+       cl::desc("Track tainting (none by default)."),
+       cl::values(clEnumValN(Interpreter::TaintConfig::NoTaint, "none", "Don't track tainting (default)"),
+                  clEnumValN(Interpreter::TaintConfig::Direct, "direct", "Track direct tainting assignments"),
+                  clEnumValN(Interpreter::TaintConfig::ControlFlow, "controlflow", "Track control-flow indirect tainting"),
+                  clEnumValN(Interpreter::TaintConfig::Regions, "regions", "Region-based tainting"),
+                  clEnumValEnd),
+       cl::init(Interpreter::TaintConfig::NoTaint));
+
   cl::opt<std::string>
   InputFile(cl::desc("<input bytecode>"), cl::Positional, cl::init("-"));
 
@@ -840,7 +851,8 @@ static const char *dontCareExternals[] = {
   "__errno_location",
   "fstat",
 #endif
-
+  "klee_get_taint",
+  "klee_set_taint",
   // static information, pretty ok to return
   "getegid",
   "geteuid",
@@ -1325,7 +1337,8 @@ int main(int argc, char **argv, char **envp) {
                                   /*Optimize=*/OptimizeModule,
                                   /*CheckDivZero=*/CheckDivZero,
                                   /*CheckOvershift=*/CheckOvershift);
-
+  
+  Opts.CalculateRegions = Taint == Interpreter::TaintConfig::Regions;
   switch (Libc) {
   case NoLibc: /* silence compiler warning */
     break;
@@ -1410,6 +1423,23 @@ int main(int argc, char **argv, char **envp) {
   }
 
   Interpreter::InterpreterOptions IOpts;
+  IOpts.TaintConfig = Interpreter::TaintConfig(Taint);
+  switch(Taint){
+      case Interpreter::TaintConfig::Direct: 
+        llvm::errs() << "Using direct tainting\n";
+        break;
+      case Interpreter::TaintConfig::ControlFlow: 
+        llvm::errs() << "Using direct and control flow based tainitng\n";
+        break;
+      case Interpreter::TaintConfig::Regions: 
+        llvm::errs() << "Using direct and control flow based tainitng with SESE support\n";
+        break;
+      case Interpreter::TaintConfig::NoTaint:
+      default:
+        break;
+  }
+  
+
   IOpts.MakeConcreteSymbolic = MakeConcreteSymbolic;
   KleeHandler *handler = new KleeHandler(pArgc, pArgv);
   Interpreter *interpreter =

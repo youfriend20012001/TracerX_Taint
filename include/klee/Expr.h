@@ -102,11 +102,13 @@ public:
   static const Width Int32 = 32;
   static const Width Int64 = 64;
   static const Width Fl80 = 80;
+  
 
   enum Kind {
     InvalidKind = -1,
 
     // Primitive
+
     Constant = 0,
 
     // Special
@@ -117,7 +119,7 @@ public:
     NotOptimized,
 
     //// Skip old varexpr, just for deserialization, purge at some point
-    Read = NotOptimized + 2,
+    Read=NotOptimized+2, 
     Select,
     Concat,
     Extract,
@@ -145,10 +147,10 @@ public:
     Shl,
     LShr,
     AShr,
-
+    
     // Compare
     Eq,
-    Ne, ///< Not used in canonical form
+    Ne,  ///< Not used in canonical form
     Ult,
     Ule,
     Ugt, ///< Not used in canonical form
@@ -171,9 +173,10 @@ public:
 
 protected:  
   unsigned hashValue;
-  
+  ref<Expr> *taintsDetails;
+
 public:
-  Expr() : refCount(0) { Expr::count++; }
+  Expr() : refCount(0){ Expr::count++;}
   virtual ~Expr() { Expr::count--; } 
 
   virtual Kind getKind() const = 0;
@@ -183,6 +186,7 @@ public:
   virtual ref<Expr> getKid(unsigned i) const = 0;
     
   virtual void print(llvm::raw_ostream &os) const;
+
 
   /// dump - Print the expression to stderr.
   void dump() const;
@@ -203,6 +207,7 @@ public:
     equivs.clear();
     return r;
   }
+
   virtual int compareContents(const Expr &b) const { return 0; }
 
   // Given an array of new kids return a copy of the expression
@@ -251,6 +256,33 @@ public:
   static bool needsResultType() { return false; }
 
   static bool classof(const Expr *) { return true; }
+  
+  // Mark 'taint' value for bit at 'offset'
+  void markTaint(unsigned offset, ref<Expr> taint){
+	  if(taint.isNull()) return;
+	  initialTaint();
+	  taintsDetails[offset] = taint;
+	}
+  
+  // Read taint value of bit at 'offset'
+  ref<Expr> readTaintDetails(unsigned offset){
+	  if(!taintsDetails)
+		  return 0;
+	  return taintsDetails[offset];
+	}
+  
+  // Initial no taint value for expression
+  void initialTaint()
+  {
+	  if(!taintsDetails){
+			  taintsDetails = new ref<Expr>[getWidth()];
+			  for(unsigned i = 0; i < getWidth(); i++){ taintsDetails[i] = 0;}
+	  }
+  }
+
+protected:
+  // Propagate tainted value
+  virtual void propagateTaint() {};
 };
 
 struct Expr::CreateArg {
@@ -331,11 +363,24 @@ public:
 private:
   llvm::APInt value;
 
-  ConstantExpr(const llvm::APInt &v) : value(v) {}
+  ConstantExpr(const llvm::APInt &v) : value(v){
+	  initialTaint();
+	  propagateTaint();
+  }
+
+protected:
+  // Propagate tainted value
+  // Default, no taint
+  void propagateTaint(){
+	  for (unsigned i = 0; i < getWidth(); i++)
+	  {
+		  markTaint(i, 0);
+	  }
+  }
 
 public:
   ~ConstantExpr() {}
-  
+
   Width getWidth() const { return value.getBitWidth(); }
   Kind getKind() const { return Constant; }
 
@@ -352,9 +397,9 @@ public:
   /// return type of this method.
   ///
   ///\param bits - optional parameter that can be used to check that the
-  ///number of bits used by this constant is <= to the parameter
-  ///value. This is useful for checking that type casts won't truncate
-  ///useful bits.
+  /// number of bits used by this constant is <= to the parameter
+  /// value. This is useful for checking that type casts won't truncate
+  /// useful bits.
   ///
   /// Example: unit8_t byte= (unit8_t) constant->getZExtValue(8);
   uint64_t getZExtValue(unsigned bits = 64) const {
@@ -371,26 +416,24 @@ public:
   /// toString - Return the constant value as a string
   /// \param Res specifies the string for the result to be placed in
   /// \param radix specifies the base (e.g. 2,10,16). The default is base 10
-  void toString(std::string &Res, unsigned radix=10) const;
+  void toString(std::string &Res, unsigned radix = 10) const;
 
-
- 
-  int compareContents(const Expr &b) const { 
-    const ConstantExpr &cb = static_cast<const ConstantExpr&>(b);
-    if (getWidth() != cb.getWidth()) 
+  int compareContents(const Expr &b) const {
+    const ConstantExpr &cb = static_cast<const ConstantExpr &>(b);
+    if (getWidth() != cb.getWidth())
       return getWidth() < cb.getWidth() ? -1 : 1;
     if (value == cb.value)
       return 0;
     return value.ult(cb.value) ? -1 : 1;
   }
 
-  virtual ref<Expr> rebuild(ref<Expr> kids[]) const { 
-    assert(0 && "rebuild() on ConstantExpr"); 
-    return const_cast<ConstantExpr*>(this);
+  virtual ref<Expr> rebuild(ref<Expr> kids[]) const {
+    assert(0 && "rebuild() on ConstantExpr");
+    return const_cast<ConstantExpr *>(this);
   }
 
   virtual unsigned computeHash();
-  
+
   static ref<Expr> fromMemory(void *address, Width w);
   void toMemory(void *address);
 
@@ -407,16 +450,13 @@ public:
   static ref<ConstantExpr> alloc(uint64_t v, Width w) {
     return alloc(llvm::APInt(w, v));
   }
-  
+
   static ref<ConstantExpr> create(uint64_t v, Width w) {
-    assert(v == bits64::truncateToNBits(v, w) &&
-           "invalid constant");
+    assert(v == bits64::truncateToNBits(v, w) && "invalid constant");
     return alloc(v, w);
   }
 
-  static bool classof(const Expr *E) {
-    return E->getKind() == Expr::Constant;
-  }
+  static bool classof(const Expr *E) { return E->getKind() == Expr::Constant; }
   static bool classof(const ConstantExpr *) { return true; }
 
   /* Utility Functions */
@@ -426,15 +466,15 @@ public:
 
   /// isOne - Is this a constant one.
   bool isOne() const { return getLimitedValue() == 1; }
-  
+
   /// isTrue - Is this the true expression.
-  bool isTrue() const { 
-    return (getWidth() == Expr::Bool && value.getBoolValue()==true);
+  bool isTrue() const {
+    return (getWidth() == Expr::Bool && value.getBoolValue() == true);
   }
 
   /// isFalse - Is this the false expression.
   bool isFalse() const {
-    return (getWidth() == Expr::Bool && value.getBoolValue()==false);
+    return (getWidth() == Expr::Bool && value.getBoolValue() == false);
   }
 
   /// isAllOnes - Is this constant all ones.
@@ -486,6 +526,10 @@ public:
     return E->getKind() != Expr::Constant;
   }
   static bool classof(const NonConstantExpr *) { return true; }
+protected:
+  // Propagate tainted value
+  virtual void propagateTaint() {};
+
 };
 
 class BinaryExpr : public NonConstantExpr {
@@ -504,6 +548,7 @@ public:
  
 protected:
   BinaryExpr(const ref<Expr> &l, const ref<Expr> &r) : left(l), right(r) {}
+  virtual void propagateTaint() {};
 
 public:
   static bool classof(const Expr *E) {
@@ -511,6 +556,7 @@ public:
     return Expr::BinaryKindFirst <= k && k <= Expr::BinaryKindLast;
   }
   static bool classof(const BinaryExpr *) { return true; }
+
 };
 
 
@@ -519,6 +565,9 @@ class CmpExpr : public BinaryExpr {
 protected:
   CmpExpr(ref<Expr> l, ref<Expr> r) : BinaryExpr(l,r) {}
   
+  // Propagate tainted value
+  // Tainted value will not be propagated via Compare Expression
+  void propagateTaint(){};
 public:                                                       
   Width getWidth() const { return Bool; }
 
@@ -571,6 +620,16 @@ private:
 // Special
 
 class NotOptimizedExpr : public NonConstantExpr {
+
+protected:
+  // Propagate tainted value
+  // Default, inherit tainted value from source
+  void propagateTaint(){
+	  for (unsigned i = 0; i < getWidth(); i++)
+	  {
+		  markTaint(i, src.get()->readTaintDetails(i));
+	  }
+   }
 public:
   static const Kind kind = NotOptimized;
   static const unsigned numKids = 1;
@@ -587,13 +646,18 @@ public:
   Width getWidth() const { return src->getWidth(); }
   Kind getKind() const { return NotOptimized; }
 
+
+
   unsigned getNumKids() const { return 1; }
   ref<Expr> getKid(unsigned i) const { return src; }
 
   virtual ref<Expr> rebuild(ref<Expr> kids[]) const { return create(kids[0]); }
 
 private:
-  NotOptimizedExpr(const ref<Expr> &_src) : src(_src) {}
+  NotOptimizedExpr(const ref<Expr> &_src) : src(_src){
+	  initialTaint();
+	  propagateTaint();
+  }
 
 public:
   static bool classof(const Expr *E) {
@@ -765,9 +829,22 @@ public:
 
   virtual unsigned computeHash();
 
+protected:
+  // Propagate tainted value
+  // Default, clean tainted value
+  void propagateTaint(){
+	for (unsigned i = 0; i < getWidth(); i++)
+	{
+		markTaint(i, 0);
+	}
+   }
 private:
   ReadExpr(const UpdateList &_updates, const ref<Expr> &_index) : 
-    updates(_updates), index(_index) { assert(updates.root); }
+    updates(_updates), index(_index) {
+	  assert(updates.root);
+	  initialTaint();
+	  propagateTaint();
+  }
 
 public:
   static bool classof(const Expr *E) {
@@ -820,9 +897,21 @@ public:
     return create(kids[0], kids[1], kids[2]);
   }
 
+protected:
+  // Propagate tainted value
+  // Default, clean tainted value
+  void propagateTaint(){
+	for (unsigned i = 0; i < getWidth(); i++)
+	{
+		markTaint(i, 0);
+	}
+  }
 private:
   SelectExpr(const ref<Expr> &c, const ref<Expr> &t, const ref<Expr> &f) 
-    : cond(c), trueExpr(t), falseExpr(f) {}
+    : cond(c), trueExpr(t), falseExpr(f) {
+	  initialTaint();
+	  propagateTaint();
+  }
 
 public:
   static bool classof(const Expr *E) {
@@ -876,9 +965,23 @@ public:
   
   virtual ref<Expr> rebuild(ref<Expr> kids[]) const { return create(kids[0], kids[1]); }
   
+protected:
+  // Propagate tainted value
+  // Default, combine tainted value from both left and right expression
+  void propagateTaint(){
+	  for (unsigned i = 0; i < getWidth(); i++)
+	  {
+		  if(i < left.get()->getWidth())
+			  markTaint(i, left.get()->readTaintDetails(i));
+		  else markTaint(i, right.get()->readTaintDetails(i - left.get()->getWidth()));
+	  }
+  }
+
 private:
   ConcatExpr(const ref<Expr> &l, const ref<Expr> &r) : left(l), right(r) {
     width = l->getWidth() + r->getWidth();
+    initialTaint();
+    propagateTaint();
   }
 
 public:
@@ -932,9 +1035,23 @@ public:
 
   virtual unsigned computeHash();
 
+protected:
+  // Propagate tainted value
+  // Default, extract tainted value from offset and width
+  void propagateTaint(){
+	  for (unsigned i = 0; i < getWidth(); i++)
+	  {
+		  markTaint(i, expr.get()->readTaintDetails(offset + i));
+	  }
+  }
+
+
 private:
   ExtractExpr(const ref<Expr> &e, unsigned b, Width w) 
-    : expr(e),offset(b),width(w) {}
+    : expr(e),offset(b),width(w) {
+	  initialTaint();
+	  propagateTaint();
+  }
 
 public:
   static bool classof(const Expr *E) {
@@ -981,6 +1098,17 @@ public:
 
   virtual unsigned computeHash();
 
+protected:
+  // Propagate tainted value
+  // Default, apply Not to expr's tainted value
+  // Need review
+  void propagateTaint(){
+ 	  for (unsigned i = 0; i < getWidth(); i++)
+ 	  {
+ 		  markTaint(i, NotExpr::create(ExtractExpr::create(expr,i,1)));
+ 	  }
+  }
+
 public:
   static bool classof(const Expr *E) {
     return E->getKind() == Expr::Not;
@@ -988,7 +1116,10 @@ public:
   static bool classof(const NotExpr *) { return true; }
 
 private:
-  NotExpr(const ref<Expr> &e) : expr(e) {}
+  NotExpr(const ref<Expr> &e) : expr(e) {
+	  initialTaint();
+	  propagateTaint();
+  }
 };
 
 
@@ -1001,7 +1132,10 @@ public:
   Width width;
 
 public:
-  CastExpr(const ref<Expr> &e, Width w) : src(e), width(w) {}
+  CastExpr(const ref<Expr> &e, Width w) : src(e), width(w) {
+	  initialTaint();
+	  propagateTaint();
+  }
 
   Width getWidth() const { return width; }
 
@@ -1023,6 +1157,17 @@ public:
     return Expr::CastKindFirst <= k && k <= Expr::CastKindLast;
   }
   static bool classof(const CastExpr *) { return true; }
+
+protected:
+  // Propagate tainted value
+  // Default, extract from source's tainted value
+  // Need review
+  void propagateTaint(){
+	  for (unsigned i = 0; i < getWidth(); i++)
+	  {
+		  markTaint(i, src.get()->readTaintDetails(i));
+	  }
+  }
 };
 
 #define CAST_EXPR_CLASS(_class_kind)                             \
@@ -1053,50 +1198,6 @@ public:                                                          \
 
 CAST_EXPR_CLASS(SExt)
 CAST_EXPR_CLASS(ZExt)
-
-// Arithmetic/Bit Exprs
-
-#define ARITHMETIC_EXPR_CLASS(_class_kind)                           \
-class _class_kind ## Expr : public BinaryExpr {                      \
-public:                                                              \
-  static const Kind kind = _class_kind;                              \
-  static const unsigned numKids = 2;                                 \
-public:                                                              \
-    _class_kind ## Expr(const ref<Expr> &l,                          \
-                        const ref<Expr> &r) : BinaryExpr(l,r) {}     \
-    static ref<Expr> alloc(const ref<Expr> &l, const ref<Expr> &r) { \
-      ref<Expr> res(new _class_kind ## Expr (l, r));                 \
-      res->computeHash();                                            \
-      return res;                                                    \
-    }                                                                \
-    static ref<Expr> create(const ref<Expr> &l, const ref<Expr> &r); \
-    Width getWidth() const { return left->getWidth(); }              \
-    Kind getKind() const { return _class_kind; }                     \
-    virtual ref<Expr> rebuild(ref<Expr> kids[]) const {              \
-      return create(kids[0], kids[1]);                               \
-    }                                                                \
-                                                                     \
-    static bool classof(const Expr *E) {                             \
-      return E->getKind() == Expr::_class_kind;                      \
-    }                                                                \
-    static bool classof(const  _class_kind ## Expr *) {              \
-      return true;                                                   \
-    }                                                                \
-};                                                                   \
-
-ARITHMETIC_EXPR_CLASS(Add)
-ARITHMETIC_EXPR_CLASS(Sub)
-ARITHMETIC_EXPR_CLASS(Mul)
-ARITHMETIC_EXPR_CLASS(UDiv)
-ARITHMETIC_EXPR_CLASS(SDiv)
-ARITHMETIC_EXPR_CLASS(URem)
-ARITHMETIC_EXPR_CLASS(SRem)
-ARITHMETIC_EXPR_CLASS(And)
-ARITHMETIC_EXPR_CLASS(Or)
-ARITHMETIC_EXPR_CLASS(Xor)
-ARITHMETIC_EXPR_CLASS(Shl)
-ARITHMETIC_EXPR_CLASS(LShr)
-ARITHMETIC_EXPR_CLASS(AShr)
 
 // Comparison Exprs
 
@@ -1137,6 +1238,145 @@ COMPARISON_EXPR_CLASS(Slt)
 COMPARISON_EXPR_CLASS(Sle)
 COMPARISON_EXPR_CLASS(Sgt)
 COMPARISON_EXPR_CLASS(Sge)
+
+
+
+
+// Arithmetic/Bit Exprs
+
+#define ARITHMETIC_EXPR_CLASS(_class_kind)                           \
+class _class_kind ## Expr : public BinaryExpr {                      \
+public:                                                              \
+  static const Kind kind = _class_kind;                              \
+  static const unsigned numKids = 2;                                 \
+public:                                                              \
+    _class_kind ## Expr(const ref<Expr> &l,                          \
+                        const ref<Expr> &r) : BinaryExpr(l,r) {      \
+    	initialTaint();                                              \
+		propagateTaint();                                            \
+    }                                                                \
+    static ref<Expr> alloc(const ref<Expr> &l, const ref<Expr> &r) { \
+      ref<Expr> res(new _class_kind ## Expr (l, r));                 \
+      res->computeHash();                                            \
+      return res;                                                    \
+    }                                                                \
+    static ref<Expr> create(const ref<Expr> &l, const ref<Expr> &r); \
+    																 \
+																	 \
+    Width getWidth() const { return left->getWidth(); }              \
+    Kind getKind() const { return _class_kind; }                     \
+    virtual ref<Expr> rebuild(ref<Expr> kids[]) const {              \
+      return create(kids[0], kids[1]);                               \
+    }                                                                \
+                                                                     \
+    static bool classof(const Expr *E) {                             \
+      return E->getKind() == Expr::_class_kind;                      \
+    }                                                                \
+    static bool classof(const  _class_kind ## Expr *) {              \
+      return true;                                                   \
+    }                                                                \
+protected:															 \
+	void propagateTaint(){										     \
+	    	switch(getKind())							                 \
+			{							                                 \
+				case Expr::Add:                                          \
+					for (unsigned i = 0; i < getWidth(); i++)            \
+					  {                                                  \
+						  markTaint(i, ConstantExpr::create(0, Expr::Bool));                \
+					  }                                                                     \
+					break;                                                                  \
+				case Expr::Sub:                                                             \
+					for (unsigned i = 0; i < getWidth(); i++)                               \
+									  {                                                     \
+										  markTaint(i, ConstantExpr::create(0, Expr::Bool));\
+									  }                                                     \
+					break;                                                                  \
+				case Expr::Mul:                                                             \
+					for (unsigned i = 0; i < getWidth(); i++)                               \
+									  {                                                     \
+										  markTaint(i, ConstantExpr::create(0, Expr::Bool));\
+									  }                                                     \
+					break;                                                                  \
+				case Expr::UDiv:															\
+					for (unsigned i = 0; i < getWidth(); i++)								\
+									  {														\
+										  markTaint(i, ConstantExpr::create(0, Expr::Bool));\
+									  }														\
+					break;																	\
+				case Expr::SDiv:															\
+					for (unsigned i = 0; i < getWidth(); i++)								\
+									  {														\
+										  markTaint(i, ConstantExpr::create(0, Expr::Bool));\
+									  }														\
+					break;																	\
+				case Expr::URem:															\
+					for (unsigned i = 0; i < getWidth(); i++)								\
+									  {														\
+										  markTaint(i, ConstantExpr::create(0, Expr::Bool));\
+									  }														\
+					break;																	\
+				case Expr::SRem:															\
+					for (unsigned i = 0; i < getWidth(); i++)								\
+									  {														\
+										  markTaint(i, ConstantExpr::create(0, Expr::Bool));\
+									  }														\
+					break;																	\
+				case Expr::And:																\
+					for (unsigned i = 0; i < getWidth(); i++)								\
+									  {														\
+										  markTaint(i, ConstantExpr::create(0, Expr::Bool));\
+									  }														\
+					break;																	\
+				case Expr::Or:																\
+					for (unsigned i = 0; i < getWidth(); i++)								\
+									  {														\
+										  markTaint(i, ConstantExpr::create(0, Expr::Bool));\
+									  }														\
+					break;																	\
+				case Expr::Xor:																\
+					for (unsigned i = 0; i < getWidth(); i++)								\
+									  {														\
+										  markTaint(i, ConstantExpr::create(0, Expr::Bool));\
+									  }														\
+					break;																	\
+				case Expr::Shl:																\
+					for (unsigned i = 0; i < getWidth(); i++)								\
+									  {														\
+										  markTaint(i, ConstantExpr::create(0, Expr::Bool));\
+									  }														\
+					break;																	\
+				case Expr::LShr:															\
+					for (unsigned i = 0; i < getWidth(); i++)								\
+									  {														\
+										  markTaint(i, ConstantExpr::create(0, Expr::Bool));\
+									  }														\
+					break;																	\
+				case Expr::AShr:															\
+					for (unsigned i = 0; i < getWidth(); i++)								\
+									  {														\
+										  markTaint(i, ConstantExpr::create(0, Expr::Bool));\
+									  }														\
+					break;																	\
+				default: break; 										 \
+			}															 \
+		 }																 \
+};                                                                   \
+
+
+ARITHMETIC_EXPR_CLASS(Add)
+ARITHMETIC_EXPR_CLASS(Sub)
+ARITHMETIC_EXPR_CLASS(Mul)
+ARITHMETIC_EXPR_CLASS(UDiv)
+ARITHMETIC_EXPR_CLASS(SDiv)
+ARITHMETIC_EXPR_CLASS(URem)
+ARITHMETIC_EXPR_CLASS(SRem)
+ARITHMETIC_EXPR_CLASS(And)
+ARITHMETIC_EXPR_CLASS(Or)
+ARITHMETIC_EXPR_CLASS(Xor)
+ARITHMETIC_EXPR_CLASS(Shl)
+ARITHMETIC_EXPR_CLASS(LShr)
+ARITHMETIC_EXPR_CLASS(AShr)
+
 
 // Implementations
 

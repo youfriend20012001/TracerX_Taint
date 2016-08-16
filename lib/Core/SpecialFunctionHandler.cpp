@@ -109,6 +109,13 @@ static SpecialFunctionHandler::HandlerInfo handlerInfo[] = {
   add("malloc", handleMalloc, true),
   add("realloc", handleRealloc, true),
 
+  // Taint interface
+  add("klee_set_taint", handleSetTaint, false),
+  add("klee_get_taint", handleGetTaint, true),
+  add("klee_set_pc_taint", handleSetPcTaint, false),
+  add("klee_get_pc_taint", handleGetPcTaint, true),
+
+
   // operator delete[](void*)
   add("_ZdaPv", handleDeleteArray, false),
   // operator delete(void*)
@@ -773,3 +780,122 @@ void SpecialFunctionHandler::handleDivRemOverflow(ExecutionState &state,
                                  "overflow on division or remainder",
                                  "overflow.err");
 }
+
+
+/*taint,buffer, size*/
+void SpecialFunctionHandler::handleGetTaint(ExecutionState &state,
+                                                KInstruction *target,
+                                                std::vector<ref<Expr> > &arguments) {
+  assert(arguments.size()==2 &&
+           "invalid number of arguments to klee_taint (taint,buffer,size)");  
+
+  ref<Expr> address = arguments[0];
+  ref<Expr> size = arguments[1];
+  klee::ConstantExpr *CE_address = dyn_cast<klee::ConstantExpr>(address);
+  assert(CE_address && "Address argument should be an integer");
+  klee::ConstantExpr *CE_size = dyn_cast<klee::ConstantExpr>(size);
+  assert(CE_size && "Size argument should be an integer");
+
+  ObjectPair op;
+  if (executor.resolveOne(state, CE_address, op)){
+    const MemoryObject *mo = op.first;
+    const ObjectState *os = op.second;
+    ObjectState *wos = state.addressSpace.getWriteable(mo, os);
+    unsigned int base = CE_address->getZExtValue();
+    unsigned int size = CE_size->getZExtValue();
+    TaintSet taint = EMPTYTAINTSET;
+    for(unsigned int i = base; i<base+size; i++){
+        TaintSet byte_taint = wos->readByteTaint(i-mo->address);
+        mergeTaint(taint,byte_taint);
+        }
+    executor.bindLocal(target, state,
+                ConstantExpr::create(taint, Expr::Int32));
+    }
+
+}
+
+/*taint,buffer, size*/
+void SpecialFunctionHandler::handleSetTaint(ExecutionState &state,
+                                                KInstruction *target,
+                                                std::vector<ref<Expr> > &arguments) {
+
+  assert(arguments.size()==3 &&
+           "invalid number of arguments to klee_set_taint");  
+
+  ref<Expr> taint = arguments[0];
+  ref<Expr> address = arguments[1];
+  ref<Expr> size = arguments[2];  
+  klee::ConstantExpr *CE = dyn_cast<klee::ConstantExpr>(taint);
+  assert(CE && "First argument should be an integer");
+  klee::ConstantExpr *CE_address = dyn_cast<klee::ConstantExpr>(address);
+  assert(CE && "Address argument should be an integer");
+  klee::ConstantExpr *CE_size = dyn_cast<klee::ConstantExpr>(size);
+  assert(CE && "Size argument should be an integer");
+
+  // fast path: single in-bounds resolution
+  ObjectPair op;
+  if (executor.resolveOne(state, CE_address, op)){
+    const MemoryObject *mo = op.first;
+    const ObjectState *os = op.second;
+    ObjectState *wos = state.addressSpace.getWriteable(mo, os);
+
+    unsigned int base = CE_address->getZExtValue();
+    unsigned int size = CE_size->getZExtValue();
+    TaintSet taint_param = (unsigned int) CE->getZExtValue();
+    for(unsigned int i = base; i<base+size; i++)
+        wos->writeByteTaint((unsigned int)(i-mo->address),(TaintSet)taint_param);
+
+    //Tan
+    wos->setTaintSource(true);
+  }
+}
+
+
+void SpecialFunctionHandler::handleGetPcTaint(ExecutionState &state,
+                                                KInstruction *target,
+                                                std::vector<ref<Expr> > &arguments) {
+  assert(arguments.size()==0 &&
+           "invalid number of arguments to klee_pc_taint ()");  
+
+  executor.bindLocal(target, state,
+                ConstantExpr::create(state.getPCTaint(), Expr::Int32));
+
+}
+
+
+void SpecialFunctionHandler::handleSetPcTaint(ExecutionState &state,
+                                                KInstruction *target,
+                                                std::vector<ref<Expr> > &arguments) {
+
+  assert(arguments.size()==1 &&
+           "invalid number of arguments to klee_set_pc_taint");  
+
+  ref<Expr> taint = arguments[0];
+  klee::ConstantExpr *CE = dyn_cast<klee::ConstantExpr>(taint);
+  TaintSet taint_param = (unsigned int) CE->getZExtValue();
+
+  assert(CE && "First argument should be an integer");
+  //RC: commented out
+  //if (state.taint != taint_param)
+  //  klee_warning("Tainted condition PC retainted from 0x%08x to 0x%08x", state.taint, taint_param);
+  if (taint_param != 0)
+	{
+		klee_warning("Tainted");
+		if (state.currentTaintCount == (state.maxCurrentTaint - 5))
+		{
+		  int sizeOfNew = state.maxCurrentTaint + 100;
+		  int* pathTaintNew = new int[sizeOfNew];
+		  for(int i = 0  ; i<= state.currentTaintCount ; i++)
+		  {
+			pathTaintNew[i] = state.stateTrackingTaint[i];
+		  }
+		  state.stateTrackingTaint = pathTaintNew;
+		  state.maxCurrentTaint = sizeOfNew;
+		}
+		//Fix it
+		state.stateTrackingTaint[state.currentTaintCount] = 10000;
+		++state.currentTaintCount;
+	}
+  state.setPCTaint(taint_param);
+}
+

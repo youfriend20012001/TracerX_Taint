@@ -58,6 +58,7 @@ public:
   /// ModuleOptions - Module level options which can be set when
   /// registering a module with the interpreter.
   struct ModuleOptions {
+    bool CalculateRegions;
     std::string LibraryDir;
     bool Optimize;
     bool CheckDivZero;
@@ -77,6 +78,30 @@ public:
 	  SMTLIB2 //.SMT2 files (SMTLIB version 2 files)
   };
 
+
+
+  class TaintConfig {
+    public:
+     enum Config {
+       Direct = 0,
+       ControlFlow,
+       Regions,
+       NoTaint = 100
+     };
+    private:
+      Config config;
+
+    public:
+      TaintConfig(Config config): config(config) {}
+      bool has(Config config) const {
+          if (this->config == NoTaint) {
+              return config == NoTaint;
+          }
+          // A config also has all previously options too 
+          return config <= this->config;
+     }
+  };
+
   /// InterpreterOptions - Options varying the runtime behavior during
   /// interpretation.
   struct InterpreterOptions {
@@ -84,9 +109,10 @@ public:
     /// symbolic values. This is used to test the correctness of the
     /// symbolic execution on concrete programs.
     unsigned MakeConcreteSymbolic;
+    class TaintConfig TaintConfig;
 
     InterpreterOptions()
-      : MakeConcreteSymbolic(false)
+      : MakeConcreteSymbolic(false), TaintConfig(TaintConfig.NoTaint)
     {}
   };
 

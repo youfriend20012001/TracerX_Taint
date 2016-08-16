@@ -12,6 +12,7 @@
 #include "Context.h"
 #include "klee/CommandLine.h"
 #include "klee/Expr.h"
+#include "klee/Taint.h"
 #include "klee/Solver.h"
 #include "klee/util/BitArray.h"
 #include "klee/Internal/Support/ErrorHandling.h"
@@ -108,8 +109,11 @@ ObjectState::ObjectState(const MemoryObject *mo)
     flushMask(0),
     knownSymbolics(0),
     updates(0, 0),
+    taints(0),
+	IsTaintSource(false),
     size(mo->size),
-    readOnly(false) {
+    readOnly(false)
+{
   mo->refCount++;
   if (!UseConstantArrays) {
     static unsigned id = 0;
@@ -139,6 +143,8 @@ ObjectState::ObjectState(const MemoryObject *mo, const Array *array)
     flushMask(0),
     knownSymbolics(0),
     updates(array, 0),
+    taints(0),
+	IsTaintSource(false),
     size(mo->size),
     readOnly(false) {
   mo->refCount++;
@@ -155,6 +161,8 @@ ObjectState::ObjectState(const ObjectState &os)
     flushMask(os.flushMask ? new BitArray(*os.flushMask, os.size) : 0),
     knownSymbolics(0),
     updates(os.updates),
+    taints(0),
+	IsTaintSource(false),
     size(os.size),
     readOnly(false) {
   assert(!os.readOnly && "no need to copy read only object?");
@@ -168,12 +176,19 @@ ObjectState::ObjectState(const ObjectState &os)
   }
 
   memcpy(concreteStore, os.concreteStore, size*sizeof(*concreteStore));
+
+  if(os.taints){
+    taints = new TaintSet[os.size];
+    memcpy(taints, os.taints, size*sizeof(*taints));
+  }
+
 }
 
 ObjectState::~ObjectState() {
   if (concreteMask) delete concreteMask;
   if (flushMask) delete flushMask;
   if (knownSymbolics) delete[] knownSymbolics;
+  if (taints) delete[] taints;
   delete[] concreteStore;
 
   if (object)
@@ -402,6 +417,36 @@ void ObjectState::setKnownSymbolic(unsigned offset,
 }
 
 /***/
+//Modify to merge taint propagate to memory object
+ref<Expr> ObjectState::prepareRead(ref<Expr> offset) const{
+	bool isOldValue = false;
+	UpdateList ul = getUpdates();
+
+	if(IsTaintSource)
+	{
+		const UpdateNode *un = ul.head;
+		for (; un; un=un->next) {
+			ref<Expr> cond = EqExpr::create(offset, un->index);
+			if (ConstantExpr *CE = dyn_cast<ConstantExpr>(cond)) {
+			  if (CE->isTrue())
+				  isOldValue = true;
+			} else {
+			  break;
+			}
+		}
+	}
+
+	ref<Expr> ret = ReadExpr::create(ul,offset);
+
+	if(IsTaintSource && !isOldValue)
+		for (unsigned i = 0; i < ret.get()->getWidth(); i++)
+		{
+			ret.get()->markTaint(i, ConcatExpr::create(ConstantExpr::create(this->getObject()->address,Expr::Int64),
+												ConcatExpr::create(offset,ConstantExpr::create(i,Expr::Int8))));
+		}
+
+	return ret;
+}
 
 ref<Expr> ObjectState::read8(unsigned offset) const {
   if (isByteConcrete(offset)) {
@@ -410,9 +455,7 @@ ref<Expr> ObjectState::read8(unsigned offset) const {
     return knownSymbolics[offset];
   } else {
     assert(isByteFlushed(offset) && "unflushed byte without cache value");
-    
-    return ReadExpr::create(getUpdates(), 
-                            ConstantExpr::create(offset, Expr::Int32));
+    return prepareRead(ConstantExpr::create(offset, Expr::Int32));
   }    
 }
 
@@ -429,8 +472,7 @@ ref<Expr> ObjectState::read8(ref<Expr> offset) const {
                       size,
                       allocInfo.c_str());
   }
-  
-  return ReadExpr::create(getUpdates(), ZExtExpr::create(offset, Expr::Int32));
+  return prepareRead(ZExtExpr::create(offset, Expr::Int32));
 }
 
 void ObjectState::write8(unsigned offset, uint8_t value) {
@@ -623,3 +665,23 @@ void ObjectState::print() {
     llvm::errs() << "\t\t[" << un->index << "] = " << un->value << "\n";
   }
 }
+/*Tainting begins*/
+  void ObjectState::writeByteTaint(unsigned offset, TaintSet taint){
+        if(!taints){
+            if (taint == EMPTYTAINTSET)
+                return;
+            taints = new TaintSet[size];
+            memset(taints, 0, size*sizeof(*taints));
+        }
+        taints[offset]=taint;
+   }
+
+  TaintSet ObjectState::readByteTaint(unsigned offset)  const{
+        if(!taints){
+            return EMPTYTAINTSET;
+        }
+        return taints[offset];
+  }
+/*Tainting ends*/
+
+

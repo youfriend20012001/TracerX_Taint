@@ -13,6 +13,7 @@
 #include "klee/Internal/Module/InstructionInfoTable.h"
 #include "klee/Internal/Module/KInstruction.h"
 #include "klee/Internal/Module/KModule.h"
+#include "klee/Internal/Support/Debug.h"
 
 #include "klee/CommandLine.h"
 #include "klee/Expr.h"
@@ -48,6 +49,10 @@ StackFrame::StackFrame(KInstIterator _caller, KFunction *_kf)
   : caller(_caller), kf(_kf), callPathNode(0), 
     minDistToUncoveredOnReturn(0), varargs(0) {
   locals = new Cell[kf->numRegisters];
+  for (unsigned i=0; i<kf->numRegisters; i++)
+	{
+	  locals[i].taint=0;
+	}
 }
 
 StackFrame::StackFrame(const StackFrame &s) 
@@ -71,18 +76,44 @@ StackFrame::~StackFrame() {
 ExecutionState::ExecutionState(KFunction *kf)
     : pc(kf->instructions), prevPC(pc), queryCost(0.), weight(1), depth(0),
       instsSinceCovNew(0), coveredNew(false), forkDisabled(false), ptreeNode(0),
-      itreeNode(0) {
+       itreeNode(0),taint(0) {
   pushFrame(0, kf);
+
+  maxSpecialCount = 100;
+  pathSpecial = new KInstIterator[maxSpecialCount];
+  pathSpecialCount = 0;
+
+  maxCurrentTaint = 100;
+  stateTrackingTaint = new int[maxCurrentTaint];
+  currentTaintCount = 0;
+
 }
 
 #ifdef SUPPORT_Z3
 ExecutionState::ExecutionState(const KInstIterator &srcPrevPC,
                                const std::vector<ref<Expr> > &assumptions)
     : prevPC(srcPrevPC), constraints(assumptions), queryCost(0.), ptreeNode(0),
-      itreeNode(0) {}
+      itreeNode(0) {
+
+	maxSpecialCount = 100;
+	pathSpecial = new KInstIterator[maxSpecialCount];
+	pathSpecialCount = 0;
+
+	maxCurrentTaint = 100;
+    stateTrackingTaint = new int[maxCurrentTaint];
+    currentTaintCount = 0;
+}
 #else
 ExecutionState::ExecutionState(const std::vector<ref<Expr> > &assumptions)
-    : constraints(assumptions), queryCost(0.), ptreeNode(0), itreeNode(0) {}
+    : constraints(assumptions), queryCost(0.), ptreeNode(0), itreeNode(0) {
+	maxSpecialCount = 100;
+	pathSpecial = new KInstIterator[maxSpecialCount];
+	pathSpecialCount = 0;
+
+	maxCurrentTaint = 100;
+    stateTrackingTaint = new int[maxCurrentTaint];
+    currentTaintCount = 0;
+}
 #endif
 
 ExecutionState::~ExecutionState() {
@@ -123,10 +154,18 @@ ExecutionState::ExecutionState(const ExecutionState& state):
     ptreeNode(state.ptreeNode),
     itreeNode(state.itreeNode),
     symbolics(state.symbolics),
-    arrayNames(state.arrayNames)
+    arrayNames(state.arrayNames),
+    taint(state.taint)
 {
   for (unsigned int i=0; i<symbolics.size(); i++)
     symbolics[i].first->refCount++;
+  maxSpecialCount = 100;
+  pathSpecial = new KInstIterator[maxSpecialCount];
+  pathSpecialCount = 0;
+
+  maxCurrentTaint = 100;
+  stateTrackingTaint = new int[maxCurrentTaint];
+  currentTaintCount = 0;
 }
 
 void ExecutionState::addITreeConstraint(ref<Expr> e, llvm::Instruction *instr) {
@@ -150,12 +189,64 @@ ExecutionState *ExecutionState::branch() {
   ExecutionState *falseState = new ExecutionState(*this);
   falseState->coveredNew = false;
   falseState->coveredLines.clear();
+  falseState->taint = this->taint;
 
   weight *= .5;
   falseState->weight -= weight;
 
+
+
+
+   KInstIterator* pathNew = new KInstIterator[this->maxSpecialCount];
+   for(int i = 0  ; i<= this->pathSpecialCount ; i++)
+   {
+	   pathNew[i] = this->pathSpecial[i];
+   }
+   falseState->pathSpecial = pathNew;
+   falseState->maxSpecialCount = this->maxSpecialCount;
+   falseState->pathSpecialCount = this->pathSpecialCount;
+
+   int* taintNew = new int[this->maxCurrentTaint];
+   for(int i = 0  ; i<= this->maxCurrentTaint ; i++)
+   {
+	   taintNew[i] = this->stateTrackingTaint[i];
+   }
+   falseState->stateTrackingTaint = taintNew;
+   falseState->maxCurrentTaint = this->maxCurrentTaint;
+   falseState->currentTaintCount = this->currentTaintCount;
+
+
   return falseState;
 }
+
+//current Program counter taint getter
+TaintSet ExecutionState::getPCTaint() {
+    return taint;
+}
+//current Program counter taint setter
+void ExecutionState::setPCTaint(TaintSet new_taint) {
+    taint = new_taint;
+    KLEE_DEBUG(llvm::errs() << "PC TAINTED! " << taint << "\n");
+}
+
+//get the depth of the SESE region stack
+int ExecutionState::getRegionDepth() {
+    return stack.back().regionStack.size();
+}
+
+//called when entering a new SESE region 
+void ExecutionState::enterRegion() {
+    stack.back().regionStack.push(taint);
+    KLEE_DEBUG(llvm::errs() << "REGION CHANGED! PUSH!" << taint << "\n");
+}
+
+//called when leaving a SESE region 
+void ExecutionState::leaveRegion() {
+    taint = stack.back().regionStack.top();
+    stack.back().regionStack.pop();
+    
+}
+
 
 void ExecutionState::pushFrame(KInstIterator caller, KFunction *kf) {
   stack.push_back(StackFrame(caller,kf));
